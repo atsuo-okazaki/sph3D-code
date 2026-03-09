@@ -1,0 +1,8 @@
+      MODULE ptdump
+
+      implicit none
+      save
+
+      INTEGER(I4B) :: iptcreat, iptout, iptoutnum
+
+      END MODULE ptdump

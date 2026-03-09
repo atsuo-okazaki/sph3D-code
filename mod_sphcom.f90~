@@ -1,0 +1,8 @@
+      MODULE sphcom
+
+      implicit none
+      save
+
+      INTEGER(I4B) :: isphcom
+
+      END MODULE sphcom

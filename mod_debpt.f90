@@ -1,0 +1,9 @@
+      MODULE debpt
+
+      use idims, only : I4B
+      implicit none
+      save
+
+      INTEGER(I4B) :: iptdump
+
+      END MODULE debpt

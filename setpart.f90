@@ -1,0 +1,2038 @@
+       SUBROUTINE setpart
+!************************************************************
+!                                                           *
+!  This subroutine handles the particle set up.             *
+!                                                           *
+!  The distribution can be   random  (idist=1)              *
+!                            close-packed spheres (idist=2) *
+!                            cubic lattice                  *
+!                                                           *
+!************************************************************
+
+      use mpi_mod
+      use idims
+
+      use constants
+      use part
+      use carac
+      use densi
+      use typef
+      use new
+      use cgas
+      use kerne
+      use latti
+      use units
+      use bodys
+      use ener
+      use gtime
+      use varet
+      use rotat
+      use rbnd
+      use diskbd
+      use logun
+      use debug
+      use polyk2
+      use maspres
+      use flag
+      use pres
+      use xforce
+      use phase
+      use ptmass
+      use binary
+      use setbin
+      use init
+      use crpart
+      use ptbin
+      use active
+      use actio
+      use sphcom
+      use xtorq
+      use misali
+      use maslos
+      use winds
+      use split
+      use zzhp
+
+      implicit none
+
+      INTEGER(I4B) :: i, ih, im, is, ichang, ichmass, icoord, ipttype, &
+                 iseed, itmax, kzeropt, nextra, numpt, nx, ny, nz, &
+                 ii
+      REAL(DP) :: alum(2), ran1
+      REAL(DP) :: alpha, angvr, angvz, anommean0, areafrac, &
+                  bmass, cmx, cmy, cmz, conv, cos1, cos2, cos3, &
+                  sin1, sin2, sin3, hsinva, &
+                  curlypi, delmin, deltax, deltay, deltaz, delx, dely, &
+                  dev, dlt1, dlt2, dlt3, dmax, dmax05, ea0, eccanom, &
+                  eccent, emdot1, emdot2, exttemp, extu, f0, f1p, f2p, f3p, &
+                  fach, faclod, facx, facy, facz, fhour, fnbtot, &
+                  fracrotgrad, fracrotoffset, fractanhere, extdens, &
+                  gg2, h1, partmratio, phasang, qratio, qratio1, &
+                  r, r2, ra, rad2, gm1, partm0, rcyl2, rhocrt, rhocrt2, &
+                  rhocrt3, rmax2, rmin, rmind2, solarl, ta0, tanmag, &
+                  time, tmass, tmp, radius, rnd, rxy, rxy2, semiaxis, &
+                  totmas, tvx, tvy, tvz, tx, ty, tz, umassr, velx, &
+                  vely, vxx, vyy, vzz, x0, xi, xtild, xx, y0, yi, ytild, &
+                  yy, zi, zmax2, zz, year
+      CHARACTER(len=1) :: iok, iok2, iwhat, idens, ipres, icentral, &
+                  irotate !, &
+!!                irotatex, irotatey
+      CHARACTER(len=1) :: pgplot
+      CHARACTER(len=40) :: namexpart
+!!      CHARACTER(len=21) :: antigfile, belongfile
+!
+!--Initialise time
+!
+      gt = 0.0
+
+      CALL ktable
+!
+!--Allow for tracing flow
+!
+      if(myrank == 0)then
+      IF (itrace == 'all') WRITE (iprint, 99001)
+      endif
+99001 FORMAT (' entry subroutine setpart')
+99004 FORMAT (A1)
+
+      CALL getime(ih, im, is, fhour)
+      iseed = -1 * ((ih * 400) + (im * 17) + is)
+      iseed = -6485
+      if(myrank == 0)WRITE(*,99500) iseed
+99500 FORMAT(' The random seed is ',I5)
+      rnd = ran1(iseed)
+!
+!--Point masses
+!
+      npart = 0
+      iaccevol = 'f'
+      if(myrank == 0)WRITE (*, 99085)
+99085 FORMAT (' Do you want point masses? (y/n)')
+      READ (*, 99004) iok
+      IF (iok == 'y') THEN
+         totptmass = 0.
+         if(myrank == 0)WRITE (*, 99086)
+99086    FORMAT (' Enter number of point masses')
+         READ (*,*) numpt
+
+         if(myrank == 0)WRITE (*, 99091)
+99091    FORMAT (' Enter type of point mass (1,2,3,4)')
+         READ (*,*) ipttype
+         initialptm = ipttype
+
+
+         if(myrank == 0)WRITE (*, 99084)
+99084    FORMAT (' Do you want a binary? (y/n)')
+         READ (*, 99004) iok
+
+         IF (iok == 'y' .AND. numpt == 2) THEN
+            if(myrank == 0)WRITE (*, 99201)
+99201       FORMAT (' Enter binary mass (in solar masses)')
+            READ (*,*) umass
+!--         Set mass unit (g)
+            umass = DBLE(umass)*solarm
+            bmass = 1.0
+
+            if(myrank == 0)WRITE (*, 99202)
+99202       FORMAT (' Enter mass ratio')
+            READ (*,*) qratio
+            if(myrank == 0)WRITE (*, 99203)
+99203       FORMAT (' Enter binary period (in days)')
+            READ (*,*) utime
+!!99203       FORMAT (' Enter semi-major axis')
+!!            READ (*,*) semiaxis
+!--         Set utime (in units of second) such that
+!           the normalized binary period becomes 2*pi
+            utime = DBLE(utime)*8.64D4/(2.0D0*DBLE(pi))
+!--         Set distance unit (cm)
+            udist = (DBLE(utime)**2*DBLE(gg)*DBLE(umass)) &
+                    **(1.0D0/3.0D0)
+
+            if(myrank == 0)WRITE (*, 99204)
+99204       FORMAT (' Enter eccentricity')
+            READ (*,*) eccent
+
+!--         phase0: initial phase (phase=0 at periastron passage)
+!           ta0: true anomary at the intial phase
+            if(myrank == 0)WRITE (*, 99206)
+99206       FORMAT (' Enter the initial phase [-0.5, 0.5] ', &
+                    '(phase=0 at periastron passage)')
+            READ (*,*) phase0
+            phasang = phase0 * 2.0*pi
+
+!--         Solve Kepler's equation:
+!              phasang = eccanom - eccent*SIN(eccanom),
+!           where eccanom is the eccentric anomaly and
+!           phasang is the mean anomaly.
+!           The method is originally by Danby (1986) [I've taken
+!           it from Murray & Dermott "Solar System Dynamics" (1999,
+!           CUP) pp.35-36.]
+            conv = 1.0e-6
+            itmax = 100
+            IF (phasang < 0.0) THEN
+               kzeropt = 1-INT(phase0)
+            ELSE
+               kzeropt = -INT(phase0)
+            ENDIF
+            anommean0 = phasang + kzeropt*2.0*pi
+            IF (SIN(anommean0) == 0.0) THEN
+               eccanom = phasang
+               GOTO 99208
+            ELSE
+               ea0 = anommean0+SIN(anommean0)/ABS(SIN(anommean0)) &
+                               *0.85*eccent
+            ENDIF
+            ii = 1
+
+99207       f0 = ea0-eccent*SIN(ea0)-anommean0
+            f1p = 1.0-eccent*COS(ea0)
+            f2p = eccent*SIN(ea0)
+            f3p = eccent*COS(ea0)
+            dlt1 = -f0/f1p
+            dlt2 = -f0/(f1p+0.5*dlt1*f2p)
+            dlt3 = -f0/(f1p+0.5*dlt2*f2p+dlt2*dlt2*f3p/6.0)
+            IF (ABS(dlt3) < conv) THEN
+               eccanom = ea0 - kzeropt*2.0*pi
+            ELSE
+               ea0 = ea0 + dlt3
+               ii = ii + 1
+               IF (ii > itmax) THEN
+                  if(myrank == 0)WRITE (6,99209) dlt3
+99209             FORMAT (1x,'+++ Kepler''s eq. didn''t', &
+                          ' converge: dlt3 =',1PE10.3,' +++')
+                  STOP
+               ENDIF
+               GOTO 99207
+            ENDIF
+
+99208       x0 = COS(eccanom)-eccent
+            y0 = SQRT(1.0e0-eccent*eccent)*SIN(eccanom)
+            ta0 = ATAN2(y0,x0)
+            IF (eccanom*ta0 < 0.0) THEN
+               IF (eccanom > 0.0) THEN
+                  ta0 = ta0 + 2.0*pi
+               ELSE
+                  ta0 = ta0 - 2.0*pi
+               ENDIF
+            ENDIF
+            dev = eccanom-ta0
+            IF (ABS(dev) > pi) THEN
+               IF (eccanom > 0.0) THEN
+                  ta0 = ta0 + 2.0*pi
+               ELSE
+                  ta0 = ta0 - 2.0*pi
+               ENDIF
+            ENDIF
+
+            if(myrank == 0)WRITE (*, 99205)
+99205       FORMAT (' Enter radii of point masses', &
+                    ' 1 and 2 in units of a')
+            READ (*,*) rptmas(1), rptmas(2)
+
+            CALL unit
+
+            semiaxis = 1.0
+            qratio1 = 1.0 + qratio
+
+            npart = npart + 2
+            iphase(1) = ipttype
+            iphase(2) = ipttype
+            listpm(1) = 1
+            listpm(2) = 2
+            ra = semiaxis*(1-eccent*COS(eccanom))
+            pmass(1) = bmass/qratio1
+            pmass(2) = qratio*pmass(1)
+
+!--         Attention to the (peculiar) configuration adopted
+!           in this code! The companion is in the -x direction
+!           at periastron. In this configuration, the longitute
+!           of periastron, curlypi, is pi.
+            IF (qratio > 1.0) THEN
+               curlypi = 0.0
+            ELSE
+               curlypi = pi
+            ENDIF
+            x(1) = -pmass(2)*ra/bmass*COS(ta0+curlypi)
+            y(1) = -pmass(2)*ra/bmass*SIN(ta0+curlypi)
+            z(1) = 0.
+            x(2) = pmass(1)*ra/bmass*COS(ta0+curlypi)
+            y(2) = pmass(1)*ra/bmass*SIN(ta0+curlypi)
+            z(2) = 0.
+            velx = -SQRT(bmass/(semiaxis*(1.0-eccent*eccent))) &
+                   *SIN(ta0+curlypi)
+            vely = SQRT(bmass/(semiaxis*(1.0-eccent*eccent))) &
+                   *(eccent*COS(curlypi)+COS(ta0+curlypi))
+            vx(1) = -velx*qratio/qratio1
+            vy(1) = -vely*qratio/qratio1
+            vz(1) = 0.
+            vx(2) = velx/qratio1
+            vy(2) = vely/qratio1
+            vz(2) = 0.
+            totptmass = bmass
+            spinx(1) = 0.
+            spiny(1) = 0.
+            spinz(1) = 0.
+            angaddx(1) = 0.
+            angaddy(1) = 0.
+            angaddz(1) = 0.
+            spinx(2) = 0.
+            spiny(2) = 0.
+            spinz(2) = 0.
+            angaddx(2) = 0.
+            angaddy(2) = 0.
+            angaddz(2) = 0.
+            if(myrank == 0)then
+            WRITE (*,*) 'x(1)=',x(1),', y(1)=',y(1),', z(1)=',z(1)
+            WRITE (*,*) 'vx(1)=',vx(1),', vy(1)=',vy(1),', vz(1)=',vz(1)
+            WRITE (*,*) 'x(2)=',x(2),', y(2)=',y(2),', z(2)=',z(2)
+            WRITE (*,*) 'vx(2)=',vx(2),', vy(2)=',vy(2),', vz(2)=',vz(2)
+            endif
+         ELSEIF (numpt == 1) THEN
+            npart = npart + 1
+            iphase(npart) = ipttype
+            listpm(1) = npart
+
+            if(myrank == 0)WRITE (*, 99101)
+99101       FORMAT (' Enter mass in solar masses')
+            READ (*,*) umass
+!--         Set mass unit (g)
+            umass = DBLE(umass)*solarm
+            bmass = 1.0
+            pmass(npart) = bmass
+            totptmass = pmass(npart)
+            fnbtot = 1.
+
+!--         Specify distance unit (cm)
+            if(myrank == 0)WRITE (*, 99108)
+99108       FORMAT (' Enter unit of distance in cm')
+            READ (*,*) udist
+
+!--         Compute time unit
+            utime = DSQRT(DBLE(udist)**3/(DBLE(gg)*DBLE(umass)))
+
+            CALL unit
+
+            if(myrank == 0)WRITE (*, 99102) REAL(udist)
+99102       FORMAT (' Enter radius (unit:',1PE9.2,' cm)')
+            READ (*,*) rptmas(npart)
+            if(myrank == 0)WRITE (*, 99103)
+99103       FORMAT (' Enter positions (x,y,z)')
+            READ (*,*) tx,ty,tz
+            x(npart) = tx
+            y(npart) = ty
+            z(npart) = tz
+            if(myrank == 0)WRITE (*, 99104) REAL(udist/utime)
+99104       FORMAT (' Enter velocities (vx,vy,vz) (unit:', &
+                   1PE9.2,' cm/s)')
+            READ (*,*) tvx,tvy,tvz
+            vx(npart) = tvx
+            vy(npart) = tvy
+            vz(npart) = tvz
+            spinx(npart) = 0.
+            spiny(npart) = 0.
+            spinz(npart) = 0.
+            angaddx(npart) = 0.
+            angaddy(npart) = 0.
+            angaddz(npart) = 0.
+         ELSE
+!--         Specify mass unit (g)
+            fnbtot = 1.
+            umass = DBLE(fnbtot)*solarm
+!--         Specify distance unit (cm)
+            udist = 1.e13
+!--         Compute time unit
+            utime = DSQRT(DBLE(udist)**3/(DBLE(gg)*DBLE(umass)))
+
+            CALL unit
+
+            DO i = 1, numpt
+               npart = npart + 1
+               iphase(npart) = ipttype
+               listpm(i) = npart
+
+               if(myrank == 0)WRITE (*, 99089)
+99089          FORMAT (' Enter mass')
+               READ (*,*) tmass
+               pmass(npart) = tmass
+               totptmass = totptmass + tmass
+               if(myrank == 0)WRITE (*, 99106)
+99106          FORMAT (' Enter radius')
+               READ (*,*) rptmas(npart)
+               if(myrank == 0)WRITE (*, 99087)
+99087          FORMAT (' Enter positions (x,y,z)')
+               READ (*,*) tx,ty,tz
+               x(npart) = tx
+               y(npart) = ty
+               z(npart) = tz
+               if(myrank == 0)WRITE (*, 99088)
+99088          FORMAT (' Enter velocities (vx,vy,vz)')
+               READ (*,*) tvx,tvy,tvz
+               vx(npart) = tvx
+               vy(npart) = tvy
+               vz(npart) = tvz
+               spinx(npart) = 0.
+               spiny(npart) = 0.
+               spinz(npart) = 0.
+               angaddx(npart) = 0.
+               angaddy(npart) = 0.
+               angaddz(npart) = 0.
+            END DO
+         ENDIF
+
+         IF (iok == 'y' .AND. numpt == 2) THEN
+            if(myrank == 0)WRITE (*, 99093)
+99093       FORMAT (' Do you want Roche-lobe accretion radii? (y/n)')
+            READ (*, 99004) iok
+            IF (iok == 'y') THEN
+               if(myrank == 0)WRITE (*, 99094)
+99094          FORMAT (' Do you want variable accretion radii? (y/n)')
+               READ (*, 99004) iok2
+               IF (iok2 == 'y') THEN
+                  iaccevol = 'v'
+               ENDIF
+               if(myrank == 0)WRITE (*, 99095)
+99095          FORMAT (' Enter fraction of Roche-lobe size')
+               READ (*,*) accfac
+!
+!--Sets accretion radii to be the roche lobe sizes
+!     (see Accretion Power in Astrophysics, Frank, King, & Raine)
+!
+               IF (qratio >= 0.05) THEN
+                  h(1) = accfac*ra*(0.38 - 0.20*LOG10(qratio))
+!!                  h(1) = accfac*semiaxis*(0.38 - 0.20*LOG10(qratio))
+               ELSE
+                  if(myrank == 0)WRITE (*,99107)
+99107             FORMAT ('qratio < 0.05')
+                  CALL quit
+               ENDIF
+               IF (qratio < 0.5) THEN
+                  h(2) = accfac*ra* &
+                       (0.462*(qratio/qratio1)**(1.0/3.0))
+!!                  h(2) = accfac*semiaxis*
+!!     &                 (0.462*(qratio/qratio1)**(1.0/3.0))
+               ELSE
+                  h(2) = accfac*ra*(0.38 + 0.20*LOG10(qratio))
+!!                  h(2) = accfac*semiaxis*(0.38 + 0.20*LOG10(qratio))
+               ENDIF
+               hacc = h(2)
+               haccall = h(2)
+               if(myrank == 0)WRITE (*,99109) hacc, haccall
+99109          FORMAT ('Accretion radii = ',1PE12.5,',',1PE12.5)
+            ELSE
+ 555           if(myrank == 0)WRITE (*, 99090)
+99090          FORMAT (' Enter Outer Accretion radius')
+               READ (*,*) hacc
+               if(myrank == 0)WRITE (*, 99092)
+99092          FORMAT (' Enter Inner Accretion radius')
+               READ (*,*) haccall
+               IF (haccall > hacc) THEN
+                  if(myrank == 0)WRITE(*, 99096)
+99096             FORMAT(' Inner <= Outer Radius')
+                  GOTO 555
+               ENDIF
+               DO i = 1, numpt
+                  h(i) = hacc
+               END DO
+            ENDIF
+         ELSE
+ 556        if(myrank == 0)WRITE (*, 99090)
+            READ (*,*) hacc
+            if(myrank == 0)WRITE (*, 99092)
+            READ (*,*) haccall
+            IF (haccall > hacc) THEN
+               if(myrank == 0)WRITE(*, 99093)
+               GOTO 556
+            ENDIF
+            DO i = 1, numpt
+               h(i) = hacc
+            END DO
+         ENDIF
+         specang = SQRT(totptmass)
+         ptmassin = totptmass
+         nptmass = numpt
+         iptmass = 0
+      ELSE
+         nptmass = 0
+         iptmass = 0
+      ENDIF
+
+      DO i = 1, nptmass
+         rho(i) = 0.
+         dgrav(i) = 0.
+      END DO
+
+      if(myrank == 0)WRITE (*,99060) nptmass
+99060 FORMAT ('Number of point masses created: ',I8)
+
+      if(myrank == 0)WRITE (*, 99061)
+99061 FORMAT (' Do you want dynamic point mass creation (y/n)')
+      READ (*, 99004) iok
+      IF (iok == 'y') THEN
+         if(myrank == 0)WRITE (*, 99091)
+         READ (*,*) ipttype
+         iptmass = ipttype
+ 557     if(myrank == 0)WRITE (*, 99090)
+         READ (*,*) hacc
+         if(myrank == 0)WRITE (*, 99092)
+         READ (*,*) haccall
+         IF (haccall > hacc) THEN
+            if(myrank == 0)WRITE(*, 99093)
+            GOTO 557
+         ENDIF
+         if(myrank == 0)WRITE (*, 99063)
+99063    FORMAT (' Enter critical radius for point mass creation',/ &
+                 '    (rad. from another pt. mass) in code units')
+         READ (*, *) radcrit
+         if(myrank == 0)WRITE (*, 99064)
+99064    FORMAT (' Enter critical density for point mass creation',/ &
+                 '    in units of the initial density rhozero')
+         READ (*, *) ptmcrit
+      ENDIF
+!
+!--Specify Geometry
+!
+  50  if(myrank == 0)WRITE (*, 88001)
+88001 FORMAT (//, ' INITIAL CLOUD GEOMETRY ', //, &
+              '                         cube : 1 ',/, &
+              '                     cylinder : 2 ',/, &
+              '                       sphere : 3 ',/, &
+              '               accretion disk : 4 ',/, &
+              '                    ellipsoid : 5 ',/, &
+              '    constant angular momentum : 6 ',/, &
+              '             sphere with hole : 7 ',/, &
+              '  equatorial sector of sphere : 8 ',/, &
+              '          Roche lobe overflow : 9 ')
+      READ (*, *) igeom
+      IF (igeom < 1 .OR. igeom > 9) GOTO 50
+!
+!--Specify Box Size
+!
+      rmax = 0.
+      rcyl = 0.
+      rmin = 0.
+      rmind = 0.
+      ichang = 1
+
+ 100  IF (igeom == 1)  THEN
+         if(myrank == 0)WRITE (*, 99002) udist
+99002    FORMAT (//, ' PARTICLE SET UP ', //, &
+         ' Bounds of particle distribution in units of ',1pe14.5, &
+         ' (cm):  xmin, xmax, ymin, ymax, zmin, zmax')
+         READ (*, *) xmin, xmax, ymin, ymax, zmin, zmax
+         rmax = SQRT((xmax/2)**2 + (ymax/2)**2 + &
+                     (zmax/2)**2)
+         rcyl = SQRT((xmax/2)**2 + (ymax/2)**2)
+         rmind = hacc
+
+      ELSE IF (igeom == 2) THEN
+         if(myrank == 0)WRITE (*, 88003) udist
+88003    FORMAT (//, ' PARTICLE SET UP ', //, &
+         ' Bounds of particle distribution in units of ',1pe14.5, &
+         '(cm): rcyl, L/D')
+         READ (*, *) rcyl, faclod
+         zmax = rcyl * faclod
+         zmin = - zmax
+         xmax = rcyl
+         ymax = rcyl
+         xmin = - xmax
+         ymin = - ymax
+         rmax = SQRT(rcyl*rcyl + zmax*zmax)
+
+      ELSE IF (igeom == 3 .OR. igeom >= 7) THEN
+         if(myrank == 0)WRITE (*, 88002) udist
+88002    FORMAT (//, ' PARTICLE SET UP ', //, &
+         ' Bounds of particle distribution in units of ',1pe14.5, &
+         '(cm):  rmax')
+         READ (*, *) rmax
+
+         IF (igeom >= 7) THEN
+            if(myrank == 0)WRITE (*, 88102)
+88102       FORMAT (' Inner hole radius:  rmind')
+            READ (*, *) rmind
+            IF (igeom == 8 .OR. igeom == 9) THEN
+               if(myrank == 0)WRITE (*, "('Range of azimuth (deg) and ', &
+      &           'vertical angle for star 1: ', &
+      &           ' azimuth1(1), azimuth2(1), vangle1(1), vangle2(1)')")
+               READ (*,*) azimuth1(1), azimuth2(1), vangle1(1), vangle2(1)
+               IF (azimuth1(1) == azimuth2(1)) THEN
+                  azimuth1(1) = -180.0d0
+                  azimuth2(1) = -180.0d0
+               ELSEIF (azimuth1(1) > azimuth2(1)) THEN
+                  tmp = azimuth1(1)
+                  azimuth1(1) = azimuth2(1)
+                  azimuth2(1) = tmp
+               ENDIF
+               IF (vangle1(1) == vangle2(1)) THEN
+                  vangle1(1) = -90.0d0
+                  vangle2(1) = 90.0d0
+               ELSEIF (vangle1(1) > vangle2(1)) THEN
+                  tmp = vangle1(1)
+                  vangle1(1) = vangle2(1)
+                  vangle2(1) = tmp
+               ENDIF
+               azimuth1(1) = azimuth1(1) * pi/180.0d0
+               azimuth2(1) = azimuth2(1) * pi/180.0d0
+               vangle1(1) = vangle1(1) * pi/180.0d0
+               vangle2(1) = vangle2(1) * pi/180.0d0
+
+               if(myrank == 0)WRITE (*,"('Range of azimuth (deg) and ', &
+      &           'vertical angle for star 2: ', &
+      &           ' azimuth1(2), azimuth2(2), vangle1(2), vangle2(2)')")
+               READ (*,*) azimuth1(2), azimuth2(2), vangle1(2), vangle2(2)
+               IF (azimuth1(2) == azimuth2(2)) THEN
+                  azimuth1(2) = -180.0d0
+                  azimuth2(2) = 180.0d0
+               ELSEIF (azimuth1(2) > azimuth2(2)) THEN
+                  tmp = azimuth1(2)
+                  azimuth1(2) = azimuth2(2)
+                  azimuth2(2) = tmp
+               ENDIF
+               IF (vangle1(2) == vangle2(2)) THEN
+                  vangle1(2) = -90.0d0
+                  vangle2(2) = 90.0d0
+               ELSEIF (vangle1(2) > vangle2(2)) THEN
+                  tmp = vangle1(2)
+                  vangle1(2) = vangle2(2)
+                  vangle2(2) = tmp
+               ENDIF
+               azimuth1(2) = azimuth1(2) * pi/180.0d0
+               azimuth2(2) = azimuth2(2) * pi/180.0d0
+               vangle1(2) = vangle1(2) * pi/180.0d0
+               vangle2(2) = vangle2(2) * pi/180.0d0
+            ENDIF
+         ENDIF
+
+         xmax = rmax
+         ymax = rmax
+         IF (igeom == 8 .OR. igeom == 9) THEN
+            zmax = rmax * MAX(0.0d0, TAN(vangle2(1)))
+            zmin = rmax * MIN(0.0d0, TAN(vangle1(1)))
+         ELSE
+            zmax = rmax
+            zmin = - zmax
+         ENDIF
+         xmin = - xmax
+         ymin = - ymax
+         rcyl = rmax
+
+      ELSE IF (igeom == 4) THEN
+         if(myrank == 0)WRITE (*, 89003) udist
+89003    FORMAT (//, ' PARTICLE SET UP ', //, &
+         ' Maximum and minimum radius of disk',/,' in units of ', &
+         1PE14.5,'(cm): rmaxd, rmind,',/, &
+         ' and the disk height to radius ratio, h/r')
+         READ (*, *) rcyl, rmind, faclod
+         zmax = rcyl * faclod
+         zmin = - zmax
+         xmax = rcyl
+         ymax = rcyl
+         xmin = - xmax
+         ymin = - ymax
+         rmax = SQRT(rcyl*rcyl + zmax*zmax)
+
+      ELSE IF (igeom == 5) THEN
+         if(myrank == 0)WRITE (*, 89004) udist
+89004    FORMAT (//, ' PARTICLE SET UP ', //, &
+         ' Maximum and minimum radius of ellipsoid',/, &
+         ' in units of ',1pe14.5,'(cm): rmaxd, rmind,',/, &
+         ' and the ellipsoid height to radius ratio, h/r')
+         READ (*, *) rcyl, rmind, faclod
+         zmax = rcyl * faclod
+         zmin = - zmax
+         xmax = rcyl
+         ymax = rcyl
+         xmin = - xmax
+         ymin = - ymax
+         rmax = SQRT(rcyl*rcyl + zmax*zmax)
+
+      ELSE IF (igeom == 6) THEN
+         if(myrank == 0)WRITE (*, 89005) udist
+89005    FORMAT (//, ' PARTICLE SET UP ', //, &
+         ' Maximum radius of cloud',/, &
+         ' in units of ',1pe14.5,'(cm): rmax,')
+         READ (*, *) rmax
+         angvel = SQRT(gg*totptmass*umass/udist**3.0)
+         if(myrank == 0)WRITE (*, 89006) angvel
+89006    FORMAT(/, ' Angular velocity in rad/s at radius=1 is ', &
+              1PE14.6, ' for circular orbit')
+         if(myrank == 0)WRITE (*, 89007)
+89007    FORMAT(/, ' Enter angular velocity at radius=1 in fraction ', &
+              'of above units')
+         READ (*, *) angvel
+         angvel = angvel*SQRT(totptmass)
+         if(myrank == 0)WRITE (*, 89008)
+89008    FORMAT(/, ' Enter radial velocity in fraction of free-fall ', &
+              'units')
+         READ (*, *) fracradial
+
+         rmind = hacc
+         xmax = rmax
+         ymax = rmax
+         zmax = rmax
+         xmin = - xmax
+         ymin = - ymax
+         zmin = - zmax
+         rcyl = rmax
+      ENDIF
+
+      deltax = xmax - xmin
+      deltay = ymax - ymin
+      deltaz = zmax - zmin
+      rmax2 = rmax * rmax
+      rmind2 = rmind * rmind
+      rcyl2 = rcyl * rcyl
+      zmax2 = zmax * zmax
+
+ 150  if(myrank == 0)WRITE (*, 88008)
+88008 FORMAT (//,' Do you want boundaries?',/, &
+        '                               0 : no boundaries',/, &
+        '   Reflective constant volume boundries with ghosts:',/, &
+        '                               1 : cartesian boundaries',/, &
+        '                               2 : cylindrical boundaries',/, &
+        '                               3 : spherical boundaries',/, &
+        '   Constant pressure boundaries - subtract pressure:',/, &
+        '                               7 : cons. pres. boundaries',/, &
+        '   Dead particle boundaries:',/, &
+        '                               8 : constant N particles',/, &
+        '                              90 : constant N infall,', &
+           ' constant angular momentum',/, &
+        '                              91 : constant N infall,', &
+           ' constant omega',/, &
+        '                              92 : const injection rate,', &
+           ' Keplerian ang mom + initial particles',/, &
+        '                              93 : const injection rate,', &
+           ' Keplerian ang mom',/, &
+        '                              94 : const injection rate,', &
+           ' stellar winds w/o ghosts',/, &
+        '                              95 : const injection rate,', &
+           ' stellar winds+initial particles w/o ghosts',/, &
+        '                              96 : const injection rate,', &
+           ' stellar winds w/ ghosts',/, &
+        '                              97 : const injection rate,', &
+           ' stellar winds+initial particles w/ ghosts',/, &
+        '                              99 : infall rate & particle', &
+           ' pos & vel given by a file')
+      READ (*, *) ibound
+      IF (ibound < 0 .OR. (ibound > 8 .AND. ibound < 90) &
+          .OR. ibound > 99) GOTO 150
+      IF ((ibound == 92 .OR. ibound == 93) &
+          .AND. igeom /= 4) GOTO 150
+      IF (ibound == 7) THEN
+         if(myrank == 0)WRITE(*,88111)
+88111    FORMAT(/,'   What is the external temperature (units K)?')
+         READ (*,*) exttemp
+         extu = 3.0/2.0*exttemp*Rg/gmw/uergg
+         if(myrank == 0)WRITE(*,88112)
+88112    FORMAT(/,'   What is the external density  (units gm/cc)?')
+         READ (*,*) extdens
+         extdens = extdens/udens
+      ENDIF
+      IF (ibound == 8) THEN
+         if(myrank == 0)WRITE(*,88113)
+88113    FORMAT(/,'   What is the dead particle radius?')
+         READ (*,*) deadbound
+         if(myrank == 0)WRITE(*,88114)
+88114    FORMAT(/,'   How many particles to accrete before stopping?')
+         READ (*,*) nstop
+         if(myrank == 0)WRITE(*,88115)
+88115    FORMAT(/,'   How many particles from end start fast dumping?')
+         READ (*,*) nfastd
+      ENDIF
+      IF (ibound >= 90) THEN
+         IF (ibound == 90 .OR. ibound == 91) THEN
+            if(myrank == 0)WRITE(*,88113)
+            READ (*,*) deadbound
+            if(myrank == 0)WRITE(*,88116)
+88116       FORMAT(/,'   How many particles in shell', &
+                   ' near outer boundary?')
+            READ (*,*) nshell
+            if(myrank == 0)WRITE(*,88117)
+88117       FORMAT(/,'   What is the minimum radius of the shell?')
+            READ (*,*) rshell
+            rmind = rshell
+!            WRITE(*,88118)
+!88118       FORMAT(/,'   What is the minimum radius of',
+!     &            ' the STARTING shell?')
+!            READ (*,*) rmind
+         ELSE IF (ibound == 92 .OR. ibound == 93) THEN
+            if(myrank == 0)WRITE(*,88113)
+            READ (*,*) deadbound
+            if(myrank == 0)WRITE(*,88119)
+88119       FORMAT(/,'   How many particles in shell', &
+                   ' near point mass 1?')
+            READ (*,*) nshell
+            if(myrank == 0)WRITE(*,88120)
+88120       FORMAT(/,'   What is the maximum radius of the shell?')
+            READ (*,*) rshell
+
+            IF (ibound == 93) THEN
+               if(myrank == 0)WRITE(*,88121)
+88121          FORMAT(/,'   What is the injection rate?')
+               READ (*,*) emdot0
+            ENDIF
+
+!-- Redefine quantities characterizing the initial simulation box
+!!            rmax = rshell
+!!            rcyl = rmax/SQRT(1.0+faclod*faclod)
+!!            zmax = rcyl * faclod
+!!            zmin = - zmax
+!!            xmax = rcyl
+!!            ymax = rcyl
+!!            xmin = - xmax
+!!            ymin = - ymax
+
+!!            deltax = xmax - xmin
+!!            deltay = ymax - ymin
+!!            deltaz = zmax - zmin
+!!            rmax2 = rmax * rmax
+!!            rmind2 = rmind * rmind
+!!            rcyl2 = rcyl * rcyl
+!!            zmax2 = zmax * zmax
+         ELSE IF (ibound >= 94 .AND. ibound <= 97) THEN
+            if(myrank == 0)WRITE(*,88113)
+            READ (*,*) deadbound
+            if(myrank == 0)WRITE(*,88130)
+88130       FORMAT(/,'   How many initial SPH particles?')
+            READ (*,*) nshell
+            if(myrank == 0)WRITE(*,88132)
+88132       FORMAT(/,'   What is the outer radius of ', &
+                 & 'each shell?')
+            READ (*,*) rshell1, rshell2
+            if(myrank == 0)WRITE(*,88134)
+88134       FORMAT(/,'   What is the wind terminal velocity', &
+                 & ' of each star (in polar direction', &
+                 & ' if anisotropic) (cm/s)?')
+            READ (*,*) vwind1, vwind2
+            if(myrank == 0)WRITE(*,88136)
+88136       FORMAT(/,'   How fast is the stellar rotation', &
+                 & ' of each star w.r.t. critical rotation (0-1)?')
+            READ (*,*) vrot1, vrot2
+            IF (MIN(vrot1, vrot2) < 0 .OR. MAX(vrot1, vrot2) > 1) THEN
+               if(myrank == 0) WRITE(*,"('vrot1 and vro2 must be', &
+                             & ' in the range 0-1.')")
+               CALL quit
+            END IF
+            if(myrank == 0)WRITE(*,88121)
+            READ (*,*) emdot0
+            if(myrank == 0)WRITE(*,88137)
+88137       FORMAT(/,'   What is the mass loss rate', &
+                 & ' of each star (in Msun/yr)?')
+            READ (*,*) emdot1, emdot2
+            IF (emdot1 == 0) THEN
+            !-- Infinity causes an error in cartdis.f90. 
+            !   So, we adopt a value close to it.
+            !   (A. Okazaki, 4/18/2023)
+               emdotratio = 1.0d30
+            ELSE
+               emdotratio = emdot2/emdot1
+            END IF
+!----       partmratio = (wind particle mass(star2))
+!                        /(wind particle mass(star1))
+            if(myrank == 0)WRITE(*,88138)
+88138       FORMAT(/,'   What is the particle mass ratio', &
+                 & ' (partm_2/partm_1)?')
+            READ (*,*) partmratio
+
+!!            rmind = rptmas(1)
+            nshell1(1) = NINT(nshell/(1.0+emdotratio/partmratio))
+            nshell1(2) = nshell - nshell1(1)
+            sinj0(1) = 0.0
+            sinj0(2) = 0.0
+            rshell = rshell1
+            if(myrank == 0) &
+            WRITE (*,*) 'nshell=',nshell,': nshell1(1)=',nshell1(1), &
+                  ', nshell1(2)=',nshell1(2)
+         ELSE IF (ibound == 99) THEN
+            if(myrank == 0)WRITE(*,88113)
+            READ (*,*) deadbound
+            if(myrank == 0) print *, "deadbound =", deadbound
+            if(myrank == 0)WRITE(*,88116)
+            READ (*,*) nshell
+            if(myrank == 0) print *, "nshell =", nshell
+            if(myrank == 0)WRITE(*,88121)
+            READ (*,*) emdot0
+            if(myrank == 0) print *, "emdot0 =", emdot0
+            sinj0(1) = 0.0
+            if(myrank == 0)WRITE(*,"(/, &
+               & '   Give name of file to specify infall')")
+            READ (*,"(A20)") nameinfl
+            if(myrank == 0) print *, "nameinfl =", nameinfl
+            OPEN (UNIT=19, FILE=nameinfl, FORM='formatted')
+            READ (19,*) partm0, dphasei, nphasei, &
+                         (phasei(i),i=1,nphasei), &
+                         (eninfl(i),i=1,nphasei), &
+                         (xinfl(i),i=1,nphasei), &
+                         (yinfl(i),i=1,nphasei), &
+                         (zinfl(i),i=1,nphasei), &
+                         (sxinfl(i),i=1,nphasei), &
+                         (syinfl(i),i=1,nphasei), &
+                         (szinfl(i),i=1,nphasei), &
+                         (vxinfl(i),i=1,nphasei), &
+                         (vyinfl(i),i=1,nphasei), &
+                         (vzinfl(i),i=1,nphasei), &
+                         (svxinfl(i),i=1,nphasei), &
+                         (svyinfl(i),i=1,nphasei), &
+                         (svzinfl(i),i=1,nphasei), &
+                         (hinfl(i),i=1,nphasei), &
+                         (shinfl(i),i=1,nphasei)
+            if(myrank == 0)CLOSE (19)
+         ENDIF
+      ENDIF
+      nreassign = 0
+      nkill = 0
+      naccrete = 0
+      anglostx = 0.
+      anglosty = 0.
+      anglostz = 0.
+!
+!--Determine Distribution
+!
+ 200  IF (ichang == 1 .OR. ichang == 3) THEN
+         if(myrank == 0)WRITE (*, 99006)
+99006    FORMAT (/,' What distribution :  cubic lattice = 1', /, &
+                 '                      close packed  = 2', /, &
+                 '                      random        = 3', /, &
+                 '                      body centred  = 4', /, &
+                 '                      custom        = 5', /, &
+                 '                      rings         = 6')
+         READ (*, *) idist
+         if(myrank == 0)WRITE (*,*) 'idist=',idist
+      ENDIF
+ 210  if(myrank == 0)WRITE (*, 88009)
+88009 FORMAT(' Do you want to enter the spacing between particles', &
+             ' or the number of particles? (s/n)')
+      READ (*, 99004) iok
+      if(myrank == 0)WRITE (*,*) 'iok (s/n)=',iok
+
+      IF (iok == 'n' .OR. iok == 'N') THEN
+         if(myrank == 0)WRITE (*, 88004)
+88004    FORMAT(//,' Enter number of particles to use in ', &
+                ' the simulation ')
+         READ (*, *) np
+         IF (idist == 4) THEN
+            h1 = (deltax * deltay * deltaz * 2.0 / np) ** (1./3.)
+            delmin = MIN(deltax,deltay)
+            delmin = MIN(delmin,deltaz)
+            h1 = delmin/DBLE(INT(delmin/h1))
+         ELSE
+            h1 = (deltax*deltay*deltaz/np) ** (1./3.)
+         ENDIF
+         if(myrank == 0)WRITE (*,88005) h1
+88005    FORMAT ('Particle spacing, h1 = ',1PE12.5)
+         GOTO 320
+
+      ELSE IF (iok /= 's' .AND. iok /= 'S') THEN
+         GOTO 210
+      ENDIF
+!
+!--Give spacing between particles
+!
+ 300  IF (ichang == 1 .OR. ichang == 4) THEN
+         if(myrank == 0)WRITE (*, 99007) udist
+99007    FORMAT (' Spacing between particles in ',1PE14.5,' (cm)?')
+         READ (*, *) h1
+      ENDIF
+!
+!--Compute number of particles and check if ok
+!
+ 320  IF (idist == 1 .OR. idist == 3 .OR. idist == 5 .OR. &
+                                                 idist == 6) THEN
+         facx = 1.
+         facy = 1.
+         facz = 1.
+         dely = 0.
+         delx = 0.
+      ELSEIF (idist == 4) THEN
+         facx = 1.
+         facy = 1.
+         facz = 0.5
+         dely = 0.
+         delx = 0.
+      ELSE
+         facx = 1.
+         facy = SQRT(3./4.)
+         facz = SQRT(6.)/3.
+         delx = 0.5*h1
+         dely = h1*SQRT(3.)/6.
+      ENDIF
+      fach = SQRT(faclod)
+!---- Calculate the total number of particles needed,
+!     except for idist=5 (custom).
+      IF (idist == 1 .OR. idist == 2) THEN
+         nx = INT(deltax/(facx*h1)) + 1
+         ny = INT(deltay/(facy*h1)) + 2
+         nz = INT(deltaz/(facz*h1)) + 1
+         np = nx*ny*nz
+      ELSEIF (idist == 4) THEN
+         nx = INT(deltax/(facx*h1)) + 1
+         ny = INT(deltay/(facy*h1)) + 1
+         nz = INT(deltaz/(facz*h1)) + 2
+         np = nx*ny*nz
+      ELSEIF (idist == 6) THEN
+         nx = INT(deltax/(2.0*facx*h1)) + 1
+         ny = INT(pi*deltax/(facx*h1)) + 1
+         nz = INT(deltaz/(facx*h1)) + 1
+         np = nx*ny*nz
+      ENDIF
+
+  350 IF (np <= idim) THEN
+         if(myrank == 0)WRITE (*, 99008) np
+99008    FORMAT (' Total number of particles needed :', I6, /, &
+                 ' is that ok? (y/n)')
+      ELSE
+         if(myrank == 0)WRITE (*, 99009) np, idim
+99009    FORMAT (' Total number of particles needed :', I6, /, &
+                 ' this number EXCEEDS the dimensions set to ', I6, /, &
+                 ' is this still ok? (y/n)')
+      ENDIF
+      READ (*, 99004) iok
+      IF (iok == 'y') GOTO 440
+ 400  if(myrank == 0)WRITE (*, 99010)
+99010 FORMAT (' What do you want to change : all      = 1', /, &
+              '                              box size = 2', /, &
+              '                              distrib. = 3', /, &
+              '                              spacing  = 4', /, &
+              '                              npart    = 5')
+      READ (*, *) ichang
+      IF (ichang <= 2) GOTO 100
+      IF (ichang == 3) GOTO 200
+      IF (ichang == 4) GOTO 300
+      IF (ichang == 5) GOTO 210
+
+ 440  CONTINUE
+
+!--Set e.o.s. related quantities (1)
+!
+      if(myrank == 0)WRITE (*, 99022)
+99022 FORMAT (' What is the equation of state variable:', /, &
+              ' specific internal energy :  intener (i)', /, &
+              ' specific entropy         :  entropy (e)')
+      READ (*, 99024) varsta
+      if(myrank == 0)WRITE (*, *) 'varsta=',varsta
+99024 FORMAT (A7)
+      IF (varsta == 'entropy' .OR. varsta == 'e') THEN
+         varsta = 'entropy'
+         IF (ibound >= 94 .AND. ibound <= 97) THEN
+            if(myrank == 0)WRITE (*, &
+               "(' Two values of specific entropy (code units)')")
+            READ (*, *) thermal1, thermal2
+            thermal3 = 0.0
+         ELSE
+            if(myrank == 0)WRITE (*, &
+               "(' Value of specific entropy (code units)')")
+            READ (*, *) thermal1
+            thermal2 = 0.0
+            thermal3 = 0.0
+         END IF
+      ELSE
+         varsta = 'intener'
+         IF (ibound >= 94 .AND. ibound <= 97) THEN
+            if(myrank == 0)WRITE (*, &
+               "(' Two values of initial average temperature in Kelvin')")
+            READ (*, *) thermal1, thermal2
+            thermal1 = 3.0/2.0*thermal1*Rg/gmw/uergg
+            thermal2 = 3.0/2.0*thermal2*Rg/gmw/uergg
+            thermal3 = 0.0
+         ELSE
+            if(myrank == 0)WRITE (*, &
+               "(' Value of initial average temperature in Kelvin ')")
+            READ (*, *) thermal1
+            thermal1 = 3.0/2.0*thermal1*Rg/gmw/uergg
+            thermal2 = 0.0
+            thermal3 = 0.0
+         ENDIF
+      ENDIF
+      rhocrt = rhocrit * udens
+      rhocrt2 = rhocrit2 * udens
+      rhocrt3 = rhocrit3 * udens
+
+      IF (varsta == 'intener') THEN
+ 616     if(myrank == 0)WRITE (*, 99030) rhocrt, rhocrt2, rhocrt3
+99030    FORMAT (' Equation of state/Energy calculation:',/, &
+              '   Adiabatic,      p=2/3*u*rho   (a)',/, &
+              '   Isothermal,     p=2/3*u*rho   (i)',/, &
+              '   Polytropic,     p=A*rho^gamma (p)',/, &
+              '   Variable gamma, p=A*rho^gamma (v)',/, &
+              '      critical rho (s) = ', 1PE14.5, 1PE14.5, 1PE14.5, &
+            /,'   Radiative cooling, p=2/3*u*rho   (c)')
+         READ (*, 99004) encal
+         IF (encal == 'p') THEN
+            if(myrank == 0)WRITE (*,99032)
+99032       FORMAT (' Enter gamma')
+            READ (*,*) gamma
+            gm1 = gamma - 1.0
+         ELSE IF (encal == 'a') THEN
+            gamma = 5.0/3.0
+            gm1 = gamma - 1.0
+         ELSE IF (encal == 'i') THEN
+            gamma = 1.0
+         ELSE IF (encal == 'v') THEN
+!
+!--Value of gamma is irrelevant for definition of variable e.o.s.
+!
+            gamma = 5.0/3.0
+            gm1 = gamma - 1.0
+         ELSE IF (encal == 'x') THEN
+!
+!--Value of gamma is irrelevant for definition of physical e.o.s.
+!
+            gamma = 5.0/3.0
+            gm1 = gamma - 1.0
+         ELSE IF (encal == 'c') THEN
+!
+!--Value of gamma is irrelevant for simulations with cooling
+!
+            gamma = 5.0/3.0
+            gm1 = gamma - 1.0
+         ELSE
+            GOTO 616
+         ENDIF
+      ELSE
+         if(myrank == 0)WRITE (*,99034)
+99034    FORMAT (' Enter polytropic gamma')
+         READ (*,*) gamma
+      ENDIF
+
+!-- Set centre of mass of SPH particles at the primary,
+!   secondary, or centre of mass of the binary
+      IF (nptmass == 1) THEN
+         if(myrank == 0)WRITE (*,55503)
+55503    FORMAT (' Do you want to set the centre of mass of', &
+                 ' SPH particles at the point mass ?')
+         READ (*,99004) iok2
+         IF (iok2 == 'y') THEN
+            isphcom = 1
+         ELSE
+            isphcom = 0
+         ENDIF
+      ELSE
+         if(myrank == 0)WRITE (*,55505)
+55505    FORMAT (' Do you want to set the centre of mass of', &
+                 ' SPH particles at the primary or secondary', &
+                 ' ? (p/s/n)')
+         READ (*,99004) iok2
+         IF (iok2 == 'p') THEN
+            isphcom = 1
+         ELSEIF (iok2 == 's') then
+            isphcom = 2
+         ELSE
+            isphcom = 0
+         ENDIF
+      ENDIF
+!
+!--Set Density Distribution
+!
+ 450  if(myrank == 0)WRITE(*, 99014)
+99014 FORMAT (' What density variations:', /, &
+         '  Uniform particle distribution, Non-uniform masses  (m)', /, &
+         '  Uniform particle masses, Non-uniform distribution  (d)', /, &
+         '  Uniform density                                    (u)')
+      READ (*, 99004) idens
+      IF ((idens /= 'm').AND.(idens /= 'd').AND.(idens /= 'u')) GOTO 450
+
+      IF (idens /= 'u') THEN
+!
+!--Set Non-Uniform Density Distribution
+!
+ 550     if(myrank == 0)WRITE(*, 99016)
+99016    FORMAT (' Coords for density variations: Cartesian   (1)', /, &
+            '                                Cylindrical (2)', /, &
+            '                                Spherical   (3)')
+         READ (*,*) icoord
+         IF ((icoord < 1).OR.(icoord > 3)) GOTO 550
+
+         IF (ibound < 94 .OR. ibound > 97) THEN
+            IF (idens == 'm') THEN
+               CALL unifdis(igeom, idist, np, h1, facx, facy, facz, &
+                            delx, dely, nx, ny, nz, ibound)
+               IF (notdone == 1) GOTO 400
+
+               if(myrank == 0)WRITE(*, 99105)
+               READ (*, 99004) icentral
+               IF (icentral == 'y') CALL condense
+
+               IF (icoord == 1) THEN
+                  CALL cartmas
+               ELSEIF (icoord == 2) THEN
+                  CALL cylmas
+               ELSE
+                  CALL sphmas
+               ENDIF
+            ELSE
+               IF (thermal2 == 0.0) THEN
+                  WRITE (*,*) 'thermal=',thermal1
+               ELSE
+                  WRITE (*,*) 'thermal1=',thermal1, &
+                     ', thermal2=', thermal2
+               END IF
+               IF (icoord == 1) THEN
+!!                  CALL cartdis(igeom, idist, np, h1, thermal)
+                  CALL cartdis(idist, np, h1, thermal1, thermal2)
+               ELSE IF (icoord == 2) THEN
+                  CALL cyldis
+               ELSE
+                  CALL sphdis(igeom, idist, np ,h1, facx, facy, facz, &
+                            delx, dely, nx, ny, nz)
+               ENDIF
+            ENDIF
+         ENDIF
+         if(myrank == 0)WRITE (*, *) 'npart=',npart
+      ELSE
+!
+!--Set Uniform Density Distribution
+!
+         CALL unifdis(igeom, idist, np, h1, facx, facy, facz, &
+                         delx, dely, nx, ny, nz, ibound)
+         IF (notdone == 1) GOTO 400
+ 575     if(myrank == 0)WRITE(*, 99105)
+99105    FORMAT (' Do you want to centrally condense the particles?')
+         READ (*, 99004) icentral
+
+         IF (icentral == 'y') CALL condense
+      ENDIF
+
+!
+!---- Before 31 March 2003, rotation angles about x- and y-axies
+!     had been used.
+!--Rotate particle distribution about x- and y-axes
+!
+!! 500  WRITE (*, 99110)
+!!99110 FORMAT (' Do you want to rotate SPH particles about x-axis?')
+!!      READ (*, 99004) irotatex
+!!      IF (irotatex == 'Y' .OR. irotatex == 'y') THEN
+!!         WRITE (*, 99115)
+!!99115    FORMAT (' Enter angle (deg)?')
+!!         READ (*,*) ranglex
+!!         ranglex = ranglex*pi/180.0
+!!      ELSE
+!!         ranglex = 0.0
+!!      ENDIF
+!!
+!! 501  WRITE (*, 99111)
+!!99111 FORMAT (' Do you want to rotate SPH particles about y-axis?')
+!!      READ (*, 99004) irotatey
+!!      IF (irotatey == 'Y' .OR. irotatey == 'y') THEN
+!!         WRITE (*, 99116)
+!!99116    FORMAT (' Enter angle (deg)?')
+!!         READ (*,*) rangley
+!!         rangley = rangley*pi/180.0
+!!      ELSE
+!!         rangley = 0.0
+!!      ENDIF
+!!
+!!c--   arot: matrix for rotation about x- and y-axes.
+!!c           Rotation about x-axis first, then about y-axis.
+!!      sinx = SIN (ranglex)
+!!      cosx = COS (ranglex)
+!!      siny = SIN (rangley)
+!!      cosy = COS (rangley)
+!!      arot(1,1) = cosy
+!!      arot(2,1) = 0.0
+!!      arot(3,1) = -siny
+!!      arot(1,2) = sinx*siny
+!!      arot(2,2) = cosx
+!!      arot(3,2) = sinx*cosy
+!!      arot(1,3) = cosx*siny
+!!      arot(2,3) = -sinx
+!!      arot(3,3) = cosx*cosy
+
+!---- After 31 March 2003, rotation using Euler angles
+!     have been used. (A. Okazaki, 31 Mar 2003)
+ 500  if(myrank == 0)WRITE (*, 99110)
+99110 FORMAT (' Do you want to rotate SPH particles?')
+      READ (*, 99004) irotate
+      IF (irotate == 'Y' .OR. irotate == 'y') THEN
+         if(myrank == 0)WRITE (*, 99115)
+99115    FORMAT (' Enter the first two of three Euler angles (in deg)' &
+                /'(The third angle is set to zero.):')
+         READ (*, *) rangle(1), rangle(2)
+         rangle(1) = rangle(1)*pi/180.0
+         rangle(2) = rangle(2)*pi/180.0
+         rangle(3) = 0.0
+      ELSE
+         rangle(1) = 0.0
+         rangle(2) = 0.0
+         rangle(3) = 0.0
+      ENDIF
+
+!--   arot: matrix for rotation using Euler angles,
+!           the third of which should be zero
+      sin1 = SIN (rangle(1))
+      cos1 = COS (rangle(1))
+      sin2 = SIN (rangle(2))
+      cos2 = COS (rangle(2))
+      sin3 = SIN (rangle(3))
+      cos3 = COS (rangle(3))
+      arot(1,1) = cos3*cos1-cos2*sin1*sin3
+      arot(2,1) = cos3*sin1+cos2*cos1*sin3
+      arot(3,1) = sin2*sin3
+      arot(1,2) = -sin3*cos1-cos2*sin1*cos3
+      arot(2,2) = -sin3*sin1+cos2*cos1*cos3
+      arot(3,2) = sin2*cos3
+      arot(1,3) = sin2*sin1
+      arot(2,3) = -sin2*cos1
+      arot(3,3) = cos2
+!
+!--Set Total Mass
+!
+      umassr = umass/solarm
+      year = 365.24219*8.64d4
+      IF (ibound >= 94 .AND. ibound <= 97) THEN
+         IF (igeom == 8) THEN
+!----       areafrac: corrected (20 April 2023)
+!           For an isotropic wind
+!            hsinva = 0.5d0*(SIN(vangle2)-SIN(vangle1))
+!            areafrac = hsinva*(azimuth2-azimuth1)/(2.0*pi)
+!           For a vertically focused wind
+            areafrac = (azimuth2(1)-azimuth1(1))/(2.0*pi)
+            partm = areafrac*emdot1/year*utime &
+                    /(emdot0*nshell1(1)*umassr)
+         ELSE
+            IF (emdot1 == 0.0) THEN
+               partm = emdot2/year*utime &
+                    /(emdot0*nshell1(2)*umassr) &
+                    /partmratio
+            ELSE
+               partm = emdot1/year*utime &
+                    /(emdot0*nshell1(1)*umassr)
+            END IF
+         ENDIF
+!!         totmas = partm*DBLE(npart - nptmass)
+         partmass(1) = partm
+         partmass(2) = partm*partmratio
+         totmas = partmass(1)*DBLE(nshell1(1))+partmass(2)*DBLE(nshell1(2))
+         if(myrank == 0)then
+         WRITE (*, *) 'partm=',partm,', totmas=',totmas
+         WRITE (*, *) 'particle mass of secondary:', partmass(2)
+         endif
+      ELSE IF (ibound == 99) THEN
+         partm = partm0/emdot0
+         totmas = partm * nshell
+      ELSE
+         if(myrank == 0)WRITE (*, 99011)
+99011    FORMAT (' Do you want to enter: Total mass of the system (1)', &
+              '                       Particle mass            (2)')
+         READ (*, *) ichmass
+         if(myrank == 0)WRITE (*, *) 'ichmass=',ichmass
+         IF (ichmass == 1) THEN
+            if(myrank == 0)WRITE (*, 99012) umassr
+99012       FORMAT (' Enter total mass of system in units of ',1pe14.5, &
+              ' solar masses')
+            READ (*, *) totmas
+            partm = totmas/(npart - nptmass)
+         ELSEIF (ichmass == 2) THEN
+            if(myrank == 0)WRITE (*, 99013) umassr
+99013       FORMAT (' Enter particle masses in units of ',1pe14.5, &
+              ' solar masses')
+            READ (*, *) partm
+            totmas = partm*DBLE(npart - nptmass)
+         ELSE
+            GOTO 500
+         ENDIF
+         if(myrank == 0)WRITE (*, *) 'partm=',partm,', totmas=',totmas
+      ENDIF
+
+      IF (igeom == 1) THEN
+         rhozero = totmas / (deltax * deltay * deltaz)
+      ELSEIF (igeom == 2) THEN
+         rhozero = totmas / (pi * deltaz * rcyl2)
+      ELSEIF (igeom == 3) THEN
+         rhozero = totmas / (4.0 * pi * rmax2 * rmax / 3.0)
+      ELSEIF (igeom == 4) THEN
+         rhozero = totmas / (pi * deltaz * (rcyl2 - rmind2))
+      ELSEIF (igeom == 5) THEN
+         rhozero = totmas / (4.0*pi/3.0*(rcyl2*zmax - rmind2*rmind))
+      ELSEIF (igeom == 6) THEN
+         rhozero = totmas / (4.0*pi*(rmax2*rmax - hacc*hacc*hacc)/3.0)
+      ELSEIF (igeom == 7) THEN
+         rhozero = totmas / (4.0*pi/3.0 * (rmax2*rmax - rmind2*rmind))
+      ELSEIF (igeom == 8 .OR. igeom == 9) THEN
+!----    COrrected (20 April 2023)
+         hsinva = 0.5d0*(SIN(vangle2(1))-SIN(vangle1(1)))
+         areafrac = hsinva*(azimuth2(1)-azimuth1(1))/(2.0*pi)
+         rhozero = partmass(1)*DBLE(nshell1(1)) &
+                   / (4.0d0*pi/3.0d0 * (rmax2*rmax - rmind2*rmind) &
+                  * areafrac)
+      ELSE
+         if(myrank == 0)WRITE(*,*) 'ERROR igeom'
+         CALL quit
+      ENDIF
+      if(myrank == 0)WRITE (*,*) 'rhozero=',rhozero
+      IF (rhozero <= 0.0) THEN
+         if(myrank == 0)WRITE(*,*) 'Negative volume'
+         CALL quit
+      ENDIF
+!
+!-- Include the point masses to calculate the mean density
+!   inside the computed volume (13 Oct 2000)
+         rhozerox = MAX(rhozero, &
+                    (totptmass+totmas) &
+                    /(xmax-xmin)*(ymax-ymin)*(zmax-zmin))
+!
+!--Set Particle Masses
+!
+      DO i = nptmass + 1, npart
+         iphase(i) = 0
+         rho(i) = 0.
+!         IF (idens == 'm') THEN
+            pmass(i) = partm * disfrac(i)
+!         ELSE
+!            pmass(i) = partm
+!         ENDIF
+         dgrav(i) = 0.
+      END DO
+!
+!--Check if distribution is ok
+!
+      if(myrank == 0)WRITE (*, 99020) npart - nptmass
+99020 FORMAT (1X, I6, ' particles have been set, is this ok? (y/n)')
+      READ (*, 99004) iok
+      IF (iok == 'n') THEN
+         if(myrank == 0)WRITE (*, 99010)
+         READ (*, *) ichang
+         IF (ichang <= 2) GOTO 100
+         IF (ichang == 3) GOTO 200
+         IF (ichang == 4) GOTO 300
+         IF (ichang == 5) GOTO 210
+      ENDIF
+
+!--Set e.o.s. related quantities (2)
+      IF (varsta == 'intener') THEN
+         IF (encal == 'p') THEN
+            RK21 = thermal1/(rhozero**gm1)
+            RK22 = thermal2/(rhozero**gm1)
+            RK23 = 0.0
+         if(myrank == 0)then
+            WRITE (*,*) 'RK21=',RK21,' (rhozero=',rhozero,')'
+            WRITE (*,*) 'RK22=',RK22
+         endif
+         ELSE IF (encal == 'a') THEN
+            RK21 = thermal1/(rhozero**gm1)
+            RK22 = thermal2/(rhozero**gm1)
+            RK23 = 0.0
+         ELSE IF (encal == 'i') THEN
+            RK21 = thermal1
+            RK22 = thermal2
+            RK23 = 0.0
+         ELSE IF (encal == 'v') THEN
+!--Value of RK2 is irrelevant for definition of physical e.o.s.
+            RK21 = thermal1/(rhozero**gm1)
+            RK22 = thermal2/(rhozero**gm1)
+            RK23 = 0.0
+         ELSE IF (encal == 'x') THEN
+!--Value of RK2 is irrelevant for definition of physical e.o.s.
+            RK21 = thermal1/(rhozero**gm1)
+            RK22 = thermal2/(rhozero**gm1)
+            RK23 = 0.0
+         ELSE IF (encal == 'c') THEN
+!--Value of RK2 defines the floor temperature for simulations
+!  with radiative cooling
+            RK21 = thermal1
+            RK22 = thermal2
+            RK23 = 0.0
+         ENDIF
+      ENDIF
+!
+!--Set Pressure Distribution
+!
+ 617  if(myrank == 0)WRITE(*, 99036)
+99036 FORMAT (' Do you want pressure variations (y/n)')
+      READ (*, 99004) ipres
+      IF ((ipres /= 'y').AND.(ipres /= 'n')) GOTO 617
+
+      IF (ipres == 'y') THEN
+!
+!--Set Non-Uniform Pressure Distribution
+!
+ 618     if(myrank == 0)WRITE(*, 99038)
+99038    FORMAT (' Coords for pressure variations: Cartesian (1)', /, &
+              '                                 Cylinderical (2)', /, &
+              '                                 Spherical    (3)')
+         READ (*,*) icoord
+         IF ((icoord < 1) .OR. (icoord > 3)) GOTO 618
+
+         IF (icoord == 1) THEN
+            CALL cartpres
+         ELSE IF (icoord == 2) THEN
+            CALL cylpres
+         ELSE
+            CALL sphpres
+         ENDIF
+         DO i = 1,nptmass
+            u(i) = 0.0
+         END DO
+         IF (ibound >= 94 .AND. ibound <= 97) THEN
+            DO i = nptmass+1, npart
+               IF (ibelong(i) == 1) THEN
+                  u(i) = thermal1*disfrac(i)
+               ELSE
+                  u(i) = thermal2*disfrac(i)
+               END IF
+            END DO
+         ELSE
+            DO i = nptmass+1, npart
+               u(i) = thermal1*disfrac(i)
+            END DO
+         END IF
+      ELSE
+!
+!--Set Uniform Pressure Distribution
+!
+         DO i = 1,nptmass
+            u(i) = 0.0
+         END DO
+         IF (ibound >= 94 .AND. ibound <= 97) THEN
+            DO i = nptmass+1, npart
+               IF (ibelong(i) == 1) THEN
+                  u(i) = thermal1
+               ELSE
+                  u(i) = thermal2
+               END IF
+            END DO
+         ELSE
+            DO i = nptmass+1, npart
+               u(i) = thermal1
+            END DO
+         END IF
+      ENDIF
+!
+!--Set in Perturbations in Position
+!
+      if(myrank == 0)WRITE (*, 99040)
+99040 FORMAT (' Random perturbations in particle positions? (y/n)')
+      READ (*, 99004) iok
+      IF (iok == 'y') THEN
+         if(myrank == 0)WRITE (*, 99042)
+99042    FORMAT (' Amplitude (in unit of spacing)')
+         READ (*, *) dmax
+         dmax05 = 0.5*dmax
+         DO i = nptmass + 1, npart
+ 625        xi = x(i) + 2.0*h1*(ran1(1)*dmax - dmax05)
+            IF (xi < xmin .OR. xi > xmax) GOTO 625
+            x(i) = xi
+ 640        yi = y(i) + 2.0*h1*(ran1(1)*dmax - dmax05)
+            IF (yi < ymin .OR. yi > ymax) GOTO 640
+            y(i) = yi
+ 660        zi = z(i) + 2.0*h1*(ran1(1)*dmax - dmax05)
+            IF (zi < zmin .OR. zi > zmax) GOTO 660
+            z(i) = zi
+         END DO
+      ENDIF
+
+      nactive = npart
+      if(myrank == 0)WRITE (*, 99044)
+99044 FORMAT(' Do you want to adjust smoothing length',/, &
+       ' to have similar number of neighbours ? (y/n) ')
+      READ (*, 99004) iok
+      IF (iok == 'y' .OR. iok == 'Y') CALL hcalc
+!
+!--Set Center of Mass at Zero
+!
+      cmx = 0.
+      cmy = 0.
+      cmz = 0.
+!!      DO i = 1, npart
+      DO i = nptmass + 1, npart
+         cmx = cmx + pmass(i)*x(i)
+         cmy = cmy + pmass(i)*y(i)
+         cmz = cmz + pmass(i)*z(i)
+      END DO
+      cmx = cmx/totmas
+      cmy = cmy/totmas
+      cmz = cmz/totmas
+      if(myrank == 0)WRITE (*, 99043) cmx,cmy,cmz
+99043 FORMAT ('Centre of mass is at: ',2(1PE12.5,','),1pE12.5)
+
+      if(myrank == 0)WRITE (*, 99045)
+99045 FORMAT(' Do you want to set the centre of mass',/, &
+       ' at zero ? (y/n) ')
+      READ (*, 99004) iok
+      IF (iok == 'y' .OR. iok == 'Y') THEN
+!!         DO i = 1, npart
+         DO i = nptmass + 1, npart
+            x(i) = x(i) - cmx
+            y(i) = y(i) - cmy
+            z(i) = z(i) - cmz
+         END DO
+      END IF
+!
+!--Find extrema of lattice
+!
+      xlmin = 1.E30
+      xlmax = 0.
+      ylmin = 1.E30
+      ylmax = 0.
+      zlmin = 1.E30
+      zlmax = 0.
+      DO i = 1, npart
+         xlmax = MAX(x(i), xlmax)
+         xlmin = MIN(x(i), xlmin)
+         ylmax = MAX(y(i), ylmax)
+         ylmin = MIN(y(i), ylmin)
+         zlmax = MAX(z(i), zlmax)
+         zlmin = MIN(z(i), zlmin)
+      END DO
+!
+!--Self-Gravity?
+!
+      if(myrank == 0)WRITE (*, 99046)
+99046 FORMAT (' Is self-gravity included? (y/n)')
+      READ (*, 99004) iok
+      igphi = 0
+      IF (iok == 'y') igphi = 1
+!
+!--Get input file options
+!
+      CALL inopts
+!
+!--Set Velocities
+!
+      if(myrank == 0)WRITE (*, 99047)
+99047 FORMAT (' Do you want          rotation : (r)',/, &
+              '    or a velocity distribution : (v)',/, &
+              '    or           no velocities : (n)')
+      READ (*, 99004) iok
+      IF (iok == 'n') GOTO 777
+      IF (iok == 'r') GOTO 776
+!
+!--Velocity Distribution
+!
+ 765  if(myrank == 0)WRITE(*, 99049)
+99049 FORMAT (' Coords for velocity variations: Cartesian    (1)', /, &
+              '                                 Cylinderical (2)', /, &
+              '                                 Spherical    (3)')
+      READ (*,*) icoord
+      IF ((icoord < 1) .OR. (icoord > 3)) GOTO 765
+
+      IF (icoord == 1) THEN
+         CALL cartvel
+      ELSE IF (icoord == 2) THEN
+         CALL cylvel
+      ELSE
+         CALL sphvel
+      ENDIF
+
+      GOTO 778
+!
+!--Set Rotation
+!
+ 776  IF (igeom == 6) THEN
+         iok = 'd'
+      ELSE
+         if(myrank == 0)WRITE (*, 99048)
+         iok = 'n'
+99048    FORMAT (' Do you want keplerian rotation :  (k)',/, &
+              '        or  solid body rotation :  (s)',/, &
+              '       or differential rotation :  (d)',/, &
+              '      or rotation perpendicular :  (p)',/, &
+              '        or no internal rotation :  (n)')
+         READ (*, 99004) iok
+      ENDIF
+
+ 777  IF (iok == 's' .OR. iok == 'd' .OR. iok == 'p') THEN
+         IF (igeom /= 6) THEN
+            if(myrank == 0)WRITE (*,99050)
+99050       FORMAT (' Enter angular velocity in rad/sec at radius=1')
+            READ (*,*) angvel
+            angvel = angvel * utime
+            IF (iok == 'p' .OR. iok == 'd') THEN
+                 if(myrank == 0)WRITE (*,99054)
+99054            FORMAT('     What rotation profile (omega)?',/, &
+                        '        omega ~ exponential (e) ?',/, &
+                        '        omega ~    1 over r (r) ?',/, &
+                        '        omega ~  1 over r^2 (s) ?')
+                 READ (*, 99004) iwhat
+            ENDIF
+         ELSEIF (igeom == 6) THEN
+            fractan = angvel/specang
+            iwhat = 's'
+         ENDIF
+      ENDIF
+
+      IF (iok == 's') THEN
+         if(myrank == 0)WRITE (*,55506)
+55506    FORMAT (' Enter fractional rotation gradient along z per', &
+              ' unit distance')
+         READ (*,*) fracrotgrad
+         if(myrank == 0)WRITE (*,55507)
+55507    FORMAT (' Enter offset for rotation gradient along z')
+         READ (*,*) fracrotoffset
+      ENDIF
+
+      if(myrank == 0)WRITE (*,*) 'iok=',iok
+      DO i = nptmass + 1, npart
+         IF (iok == 'k') THEN
+            gg2 = 1.
+            radius = SQRT(x(i)*x(i)+y(i)*y(i))
+            alpha = SQRT(gg2 * pmass(isphcom)/radius)
+            xtild = x(i)/radius
+            ytild = y(i)/radius
+            vx(i) = -alpha * ytild
+            vy(i) =  alpha * xtild
+            vz(i) =  0.0
+
+!--         Rotate SPH particles about x- and y-axes
+            xx = x(i)
+            yy = y(i)
+            zz = z(i)
+            x(i) = arot(1,1)*xx+arot(1,2)*yy+arot(1,3)*zz
+            y(i) = arot(2,1)*xx+arot(2,2)*yy+arot(2,3)*zz
+            z(i) = arot(3,1)*xx+arot(3,2)*yy+arot(3,3)*zz
+            vxx = vx(i)
+            vyy = vy(i)
+            vzz = vz(i)
+            vx(i) = arot(1,1)*vxx+arot(1,2)*vyy+arot(1,3)*vzz
+            vy(i) = arot(2,1)*vxx+arot(2,2)*vyy+arot(2,3)*vzz
+            vz(i) = arot(3,1)*vxx+arot(3,2)*vyy+arot(3,3)*vzz
+
+            IF (isphcom /= 0) THEN
+               x(i) = x(i) + x(isphcom)
+               y(i) = y(i) + y(isphcom)
+               z(i) = z(i) + z(isphcom)
+               vx(i) = vx(i) + vx(isphcom)
+               vy(i) = vy(i) + vy(isphcom)
+               vz(i) = vz(i) + vz(isphcom)
+            ENDIF
+         ELSEIF (iok == 's') THEN
+            vx(i) = -angvel * y(i) * (fracrotoffset + z(i)*fracrotgrad)
+            vy(i) =  angvel * x(i) * (fracrotoffset + z(i)*fracrotgrad)
+            vz(i) = 0.
+         ELSEIF (iok == 'd' .AND. igeom == 6) THEN
+            rxy2 = x(i)*x(i) + y(i)*y(i)
+            rxy = SQRT(rxy2)
+            r2 = rxy2 + z(i)*z(i)
+            r = SQRT(r2)
+            IF (ibound == 90) THEN
+               fractanhere = fractan
+            ELSEIF (ibound == 91) THEN
+               fractanhere = fractan*(rxy2/r2)
+            ELSE
+               if(myrank == 0)WRITE (*, 55508)
+55508          FORMAT ('ERROR - ibound')
+            ENDIF
+            tanmag = fractanhere*specang/rxy
+!            radmag = fracradial*SQRT(2.0*specang*specang/r -
+!     &           tanmag*tanmag)
+!            vx(i) = - radmag*x(i)/r - tanmag*y(i)/rxy
+!            vy(i) = - radmag*y(i)/r + tanmag*x(i)/rxy
+!            vz(i) = - radmag*z(i)/r
+            vx(i) = - tanmag*y(i)/rxy
+            vy(i) = tanmag*x(i)/rxy
+            vz(i) = 0.
+         ELSEIF (iok == 'd') THEN
+            rad2 = x(i)*x(i) + y(i)*y(i)
+!!c            rad2 = rad2 / rcyl2
+            IF (iwhat == 'e') THEN
+               angvr = angvel / (exp(0.6667 * rad2))
+            ELSE IF (iwhat == 'r') THEN
+               angvr = angvel / (rad2 ** 0.5)
+            ELSE IF (iwhat == 's') THEN
+               angvr = angvel / (rad2)
+            ENDIF
+            vx(i) = -angvr * y(i)
+            vy(i) =  angvr * x(i)
+            vz(i) = 0.
+         ELSEIF (iok == 'p') THEN
+            rad2 = z(i)*z(i) + y(i)*y(i)
+!!c            rad2 = rad2 / rmax2
+            IF (iwhat == 'e') THEN
+               angvz = angvel / (exp(0.6667 * rad2))
+            ELSE IF (iwhat == 'r') THEN
+               angvz = angvel / (rad2 ** 0.5)
+            ELSE IF (iwhat == 's') THEN
+               angvz = angvel / (rad2)
+            ENDIF
+            vz(i) = -angvz * y(i)
+            vy(i) =  angvz * z(i)
+            vx(i) = 0.
+         ELSE
+!----       If idist=5 (custom), i.e. ibound=94-97 or 99,
+!           the velocity data are already given. Don't
+!           overwrite them.
+            IF (idist /= 5) THEN
+               vx(i) = 0.
+               vy(i) = 0.
+               vz(i) = 0.
+            ENDIF
+         ENDIF
+      END DO
+ 778  n1 = npart
+      n2 = 0
+
+!---- EXTERNAL FORCE
+!     The following is an example of external forces. If you
+!     want to use an external force that has not been implemented
+!     below, EDIT BOTH THE FOLLOWING PART AND EXTERNF.F for your
+!     particular problems. It's also likely that you have to edit
+!     options.f, phoenix.f, preset.f, rdump.f, wdump.f, and
+!     wrinsph.f and COMMONS/xforce and COMMONS/winds.
+      if(myrank == 0)WRITE (*, 99066)
+99066 FORMAT (' Do you want an external force?')
+      READ (*, 99004) iok
+!---- Before 01/12/2009
+!!      xantgrav = 0.0
+      DO i=1,nptmass
+         xantgrav(i) = 0.0
+      ENDDO
+ 780  IF (iok == 'y' .OR. iok == 'Y') THEN
+         if(myrank == 0)WRITE (*, 99067)
+99067    FORMAT (' What external force?',/, &
+              '    Vertical gravitational field : 1',/, &
+              '    Accretion disk               : 3',/, &
+              '    Rotating cylinder            : 4',/, &
+              '    Central point mass           : 5',/, &
+              '    Distant point mass           : 6',/, &
+              '    beta-law winds w/o radiative inhibition: 7',/, &
+              '    beta-law winds w/  radiative inhibition: 8')
+         READ (*, *) iexf
+         IF (iexf == 3) THEN
+            if(myrank == 0)WRITE (*,55502)
+55502       FORMAT (' Enter torque parameters (xpes and xbeta)')
+            READ (*,*) xeps, xbeta
+         ELSEIF (iexf == 5 .OR. iexf == 6) THEN
+            if(myrank == 0)WRITE (*,55504)
+55504       FORMAT (' Enter mass for external forces')
+            READ (*,*) xmass
+         ELSEIF (iexf == 7 .OR. iexf == 8) THEN
+            IF (ibound < 94 .OR. ibound > 97) GOTO 780
+
+!!            IF (iexf == 7) THEN
+!!c----          iexf=7
+!!               WRITE (*,55509)
+!!cc55509          FORMAT (' Enter antigravity parameter (0-1)')
+!!55509          FORMAT (' Enter antigravity parameters')
+!!c----          Before 01/12/2009
+!!cc               READ (*,*) xantgrav
+!!c----          Since 01/12/2009
+!!               READ (*,*) xantgrav(1),xantgrav(2)
+!!            ELSEIF (iexf == 8) THEN
+!!c----          iexf=8
+!----          Input parameters to caluclate the radiative inhibition
+!              effect (beta-law winds are adopted)
+               if(myrank == 0) &
+               WRITE (*,*) 'Enter luminosities of primary and ', &
+               'secondary (in Lsun)'
+               READ (*,*) alum(1), alum(2)
+               if(myrank == 0) &
+               WRITE (*,*) 'Enter terminal velocities for ', &
+               'primary wind and secondary wind (in cm/s)'
+               READ (*,*) vinf1, vinf2
+55511          FORMAT (' Enter beta parameters of primary ', &
+                       'and secondary winds')
+               READ (*,*) vbeta(1), vbeta(2)
+
+!----          Calculation of the opacities for primary and secondary
+!              winds
+               solarl = 3.85e33
+               IF (alum(1) /= 0.0) THEN
+                  xantgrav(1) = alum(1)*solarl &
+                             /(4.0*pi*gg*pmass(1)*umass*c)
+                  akappac(1) = 2.0*pi*c/(alum(1)*solarl) &
+                         *2.0*gg*pmass(1)*umass
+                  akappar(1) = 2.0*pi*c/(alum(1)*solarl) &
+                         *vinf1*vinf1*rptmas(1)*udist &
+                         *2.0*vbeta(1)
+               ELSE
+                  xantgrav(1) = 0.0
+                  akappac(1) = 0.0
+                  akappar(1) = 0.0
+               ENDIF
+               IF (alum(2) /= 0.0) THEN
+                  xantgrav(2) = alum(2)*solarl &
+                             /(4.0*pi*gg*pmass(2)*umass*c)
+                  akappac(2) = 2.0*pi*c/(alum(2)*solarl) &
+                         *2.0*gg*pmass(2)*umass
+                  akappar(2) = 2.0*pi*c/(alum(2)*solarl) &
+                         *vinf2*vinf2*rptmas(2)*udist &
+                         *2.0*vbeta(2)
+               ELSE
+                  xantgrav(2) = 0.0
+                  akappac(2) = 0.0
+                  akappar(2) = 0.0
+               ENDIF
+               if(myrank == 0)WRITE (*,55510) alum(1), alum(2)
+55510          FORMAT ('L(primary) =',1PE12.4, &
+               ' Lsun, L(secondary) =',1PE12.4,' Lsun')
+               if(myrank == 0)WRITE (*,55520) xantgrav(1), xantgrav(2)
+55520          FORMAT ('Antigravity parameters:',1PE12.4, &
+                       ' (primary), ',1PE12.4,' (secondary)')
+               if(myrank == 0)WRITE (*,55530) akappac(1)+akappar(1), &
+                       akappac(2)+akappar(2)
+55530          FORMAT ('Opacities on the stellar surface:', &
+                     1PE12.4,' (primary), ',1PE12.4,' (secondary)')
+!!            ENDIF
+         ELSE IF (iexf < 1 .OR. iexf == 2 .OR. iexf > 8) THEN
+            GOTO 780
+         ENDIF
+      ELSE
+         iexf = 0
+      ENDIF
+
+      IF (ibound == 92 .OR. ibound == 95 .OR. ibound == 97) THEN
+!!         DO i=1,nptmass
+!!            iantigr(i) = 0
+!!         ENDDO
+!!         DO i=nptmass+1,npart
+!!            iantigr(i) = 1
+!!         ENDDO
+
+         if(myrank == 0)WRITE (*,"(/, &
+            & '   Give name of file to set extra (eg, disk) particles')")
+         READ (*,"(A20)") namexpart
+         IF (ibound == 95 .OR. ibound == 97) THEN
+            if(myrank == 0)WRITE (*,*) 'File:', namexpart
+            if(myrank == 0)WRITE (*,"(/, &
+               & '   Give mass of extra (eg, disk) particles')")
+            READ (*,*) partmass(3)
+            if(myrank == 0)WRITE (*,*) 'partmass(3):', partmass(3)
+            if(myrank == 0)WRITE (*,"(/, &
+               & '   Give nshell1(3) for extra (eg, disk) particles')")
+            READ (*,*) nshell1(3)
+            if(myrank == 0)WRITE (*,*) 'nshell1(3):', nshell1(3)
+            if(myrank == 0)WRITE (*,"(/, &
+               & '   Give initial temperature in Kelvin for extra particles')")
+            READ (*,*) thermal3
+            if(myrank == 0)WRITE (*,*) 'thermal3:', thermal3
+            thermal3 = 3.0/2.0*thermal3*Rg/gmw/uergg
+            sinj0(3) = 0.0
+
+!--         Set e.o.s. related quantities (2)                                                   IF (varsta == 'intener') THEN
+            IF (encal == 'p') THEN
+               RK23 = thermal3/(rhozero**gm1)
+               if(myrank == 0)WRITE (*,*) 'RK23=',RK23
+            ELSE IF (encal == 'a') THEN
+               RK23 = thermal3/(rhozero**gm1)
+            ELSE IF (encal == 'i') THEN
+               RK23 = thermal3
+            ELSE IF (encal == 'v') THEN
+!--Value of RK2 is irrelevant for definition of physical e.o.s.
+               RK23 = thermal3/(rhozero**gm1)
+            ELSE IF (encal == 'x') THEN
+!--Value of RK2 is irrelevant for definition of physical e.o.s.
+               RK23 = thermal3/(rhozero**gm1)
+            ELSE IF (encal == 'c') THEN
+!--Value of RK2 defines the floor temperature for simulations
+!  with radiative cooling
+               RK23 = thermal3
+            ENDIF
+         ENDIF
+
+         if(myrank == 0)WRITE (*,*) '   Do you want to use ', &
+           & 'particle-splitting method? (0:off, 1:on)'
+         READ (*,*) isplit
+         if(myrank == 0)WRITE (*,*) 'isplit:', isplit
+
+         if(myrank == 0)WRITE (*,*) 'Reading data of extra particles'
+         OPEN (UNIT=19, FILE=namexpart, FORM='formatted')
+         READ (19,*) nextra, &
+              (x(i), i=npart+1, npart+nextra), &
+              (y(i), i=npart+1, npart+nextra), &
+              (z(i), i=npart+1, npart+nextra), &
+              (vx(i), i=npart+1, npart+nextra), &
+              (vy(i), i=npart+1, npart+nextra), &
+              (vz(i), i=npart+1, npart+nextra), &
+              (u(i), i=npart+1, npart+nextra), &
+              (pmass(i), i=npart+1, npart+nextra), &
+              (rho(i), i=npart+1, npart+nextra), &
+              (h(i), i=npart+1, npart+nextra), &
+              (ibelong(i), i=npart+1, npart+nextra), &
+              (iantigr(i), i=npart+1, npart+nextra)
+         if(myrank == 0)CLOSE (19)
+
+         DO i=npart+1,npart+nextra
+            x(i) = x(i) + x(isphcom)
+            y(i) = y(i) + y(isphcom)
+            z(i) = z(i) + z(isphcom)
+            vx(i) = vx(i) + vx(isphcom)
+            vy(i) = vy(i) + vy(isphcom)
+            vz(i) = vz(i) + vz(isphcom)
+!!            rho(i) = rho(i) * partmass(3)/pmass(i)
+!!            pmass(i) = partmass(3)
+!!            ibelong(i) = isphcom
+!!            iantigr(i) = 0
+         ENDDO
+         npart = npart+nextra
+         n1 = npart
+         
+         if(myrank == 0)WRITE (*,*) 'nextra=',nextra,' -> npart=',npart
+      ENDIF
+
+      if(myrank == 0)WRITE (*, 99056)
+99056 FORMAT (//, ' END OF SETUP')
+!
+!--Write options
+!
+      CALL wrinsph
+!
+!    ------------ For PGPLOT ----------------------------------
+      pgplot = 'y'
+      IF (pgplot == 'y') THEN
+         OPEN (UNIT=ipgpr, FILE='PG'//namerun, FORM='unformatted')
+
+         IF (nptmass /= 2) THEN
+            IF (nptmass == 0) THEN
+               bmass = 0.0
+               qratio = 0.0
+               semiaxis = 0.0
+               eccent = 0.0
+            ELSE
+               bmass = pmass(1)
+               qratio = 0.0
+               semiaxis = 1.0
+               eccent = 0.0
+            ENDIF
+         ENDIF
+         time = 0.0
+!!         WRITE (ipgpr) udist, umass, utime, uergg,
+!!     &        nptmass, npart,
+!!     &        bmass, qratio, semiaxis, eccent, isphcom,
+!!     &        (rptmas(i),i=1,nptmass),hacc, haccall,
+!!     &        gmw, thermal, rangle(1), rangle(2),
+!!     &        time, gamma, rhozero, RK21, rhozerox,
+!!     &        xmax, ymax, zmax, (pmass(i),i=1,npart),
+!!     &        (x(i),i=1,npart), (y(i),i=1,npart),
+!!     &        (z(i),i=1,npart),phase0
+         if(myrank == 0) &
+         WRITE (ipgpr) udist, umass, utime, uergg, &
+              nptmass, npart, &
+              bmass, qratio, semiaxis, eccent, isphcom, &
+              (rptmas(i),i=1,nptmass),hacc, haccall, &
+              gmw, thermal1, thermal2, thermal3, &
+              rangle(1), rangle(2), &
+              time, gamma, rhozero, RK21, rhozerox, &
+              xmax, ymax, zmax, (pmass(i),i=1,npart), &
+              (x(i),i=1,npart), (y(i),i=1,npart), &
+              (z(i),i=1,npart),phase0, &
+              alum(1),alum(2),vinf1,vinf2
+!--      The following statement (CLOSE(ipgpr)) causes ERROR!
+!        I don't know why!
+!!         CLOSE(ipgpr)
+      ENDIF
+!    ----------------------------------------------------------
+
+      IF (idebug == 'setpart') THEN
+         open(6,file='setpart.data')
+         if(myrank == 0)then
+!!         WRITE (iprint, *) 'x(i), i=1,',npart
+         WRITE (iprint, 99058) (x(i), i=1, npart)
+!!         WRITE (iprint, *) 'y(i), i=1,',npart
+         WRITE (iprint, 99058) (y(i), i=1, npart)
+!!         WRITE (iprint, *) 'z(i), i=1,',npart
+         WRITE (iprint, 99058) (z(i), i=1, npart)
+!!         WRITE (iprint, *) 'vx(i), i=1,',npart
+         WRITE (iprint, 99058) (vx(i), i=1, npart)
+!!         WRITE (iprint, *) 'vy(i), i=1,',npart
+         WRITE (iprint, 99058) (vy(i), i=1, npart)
+!!         WRITE (iprint, *) 'vz(i), i=1,',npart
+         WRITE (iprint, 99058) (vz(i), i=1, npart)
+!!         WRITE (iprint, *) 'u(i), i=1,',npart
+         WRITE (iprint, 99058) (u(i), i=1, npart)
+!!         WRITE (iprint, *) 'pmass(i), i=1,',npart
+         WRITE (iprint, 99058) (pmass(i), i=1, npart)
+!!         WRITE (iprint, *) 'rho(i), i=1,',npart
+         WRITE (iprint, 99058) (rho(i), i=1, npart)
+         endif
+99058    FORMAT (1X, 5(1PE12.5,1X))
+      ENDIF
+
+      END SUBROUTINE setpart

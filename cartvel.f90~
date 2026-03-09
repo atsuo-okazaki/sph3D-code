@@ -1,0 +1,144 @@
+      SUBROUTINE cartvel
+!************************************************************
+!                                                           *
+!     This subroutine gives particles velocities in a       *
+!              cartesian coordinate distribution            *
+!                                                           *
+!************************************************************
+
+      use idims
+
+      use constants
+      use part
+      use rbnd
+      use diskbd
+      use debug
+      use logun
+      use maspres
+      use polyk2
+      use cgas
+
+      implicit none
+
+      INTEGER(I4B) :: i, icount, ireg, j
+      REAL(DP) :: rxmin(10), rxmax(10), rymin(10), rymax(10)
+      REAL(DP) :: rzmin(10), rzmax(10), xvel(10), yvel(10), &
+                        zvel(10)
+      REAL(DP) :: gama1, rcyl2, rmax2, rmind2, total, vsound
+      CHARACTER(len=1) :: iok
+!
+!--Allow for tracing flow
+!
+99004 FORMAT (A1)
+      IF (itrace.EQ.'all') WRITE (iprint, 99001)
+99001 FORMAT (' entry subroutine cartvel ')
+!
+!--Set Velocity Areas In Cartesian Coordinates
+!
+      rcyl2 = rcyl * rcyl
+      rmind2 = rmind * rmind
+      rmax2 = rmax * rmax
+
+ 40   WRITE (*, 88002)
+88002 FORMAT (' Enter number of different regions (max 10)')
+      READ (*,*) ireg
+      IF (ireg.GT.10) GOTO 40
+
+      icount = 1
+      DO 120 i = 1, ireg
+ 60      WRITE (*,*) '   Enter xmin of region ',icount
+         READ (*,*) rxmin(icount)
+         WRITE (*,*) '   Enter xmax of region ',icount
+         READ (*,*) rxmax(icount)
+         WRITE (*,*) '   Enter ymin of region ',icount
+         READ (*,*) rymin(icount)
+         WRITE (*,*) '   Enter ymax of region ',icount
+         READ (*,*) rymax(icount)
+         WRITE (*,*) '   Enter zmin of region ',icount
+         READ (*,*) rzmin(icount)
+         WRITE (*,*) '   Enter zmax of region ',icount
+         READ (*,*) rzmax(icount)
+
+         WRITE (*,*) '   Enter x velocity of region ',icount, &
+               ' in units of av. sound speed'
+         READ (*,*) xvel(icount)
+         WRITE (*,*) '   Enter y velocity of region ',icount, &
+               ' in units of av. sound speed'
+         READ (*,*) yvel(icount)
+         WRITE (*,*) '   Enter z velocity of region ',icount, &
+               ' in units of av. sound speed'
+         READ (*,*) zvel(icount)
+
+ 100     WRITE (*,*) ' Is region ',icount,' correct (y/n)? '
+         READ (*, 99004) iok
+         IF ((iok.NE.'y') .AND. (iok.NE.'n')) GOTO 100
+         IF (iok.NE.'y') GOTO 60
+         icount = icount + 1
+
+ 120  CONTINUE
+
+      IF (encal.EQ.'i') THEN
+         total = 0.
+         DO i = 1, npart
+            total = total + sqrt((2./3.)*u(i))
+         END DO
+         vsound = total/DBLE(npart)
+      ELSE IF (encal.EQ.'a') THEN
+         total = 0.
+         DO i = 1, npart
+            total = total + sqrt(gamma*(gamma-1.0)*u(i))
+         END DO
+         vsound = total/DBLE(npart)
+      ELSE IF (encal.EQ.'p') THEN
+         total = 0.
+         gama1 = gamma - 1.
+         IF (idist == 5) THEN
+            DO i = 1, npart
+               IF (ibelong(i) == 1) THEN
+                  total = total + sqrt(gamma*(2./3.)*RK21*rhozero**gama1)
+               ELSE
+                  total = total + sqrt(gamma*(2./3.)*RK22*rhozero**gama1)
+               END IF
+            END DO
+         ELSE
+            DO i = 1, npart
+               total = total + sqrt(gamma*(2./3.)*RK21*rhozero**gama1)
+            END DO
+         END IF
+         vsound = total/DBLE(npart)
+      ELSE IF (encal.EQ.'c') THEN
+         total = 0.
+         DO i = 1, npart
+            total = total + sqrt(gamma*(gamma-1.0)*u(i))
+         END DO
+         vsound = total/DBLE(npart)
+      ELSE
+         WRITE (*,*) ' NOT IMPLEMENTED'
+         CALL quit
+      END IF
+
+      WRITE (*,*) 'Average sound speed is ',vsound
+
+      DO i = 1, npart
+         vx(i) = 1.0E10
+      END DO
+
+      DO 240 i = 1, npart
+         DO 220 j = 1, ireg
+            IF ((x(i).GE.rxmin(j)) .AND. (x(i).LE.rxmax(j)) .AND. &
+                (y(i).GE.rymin(j)) .AND. (y(i).LE.rymax(j)) .AND. &
+                (z(i).GE.rzmin(j)) .AND. (z(i).LE.rzmax(j))) THEN
+               IF (vx(i).EQ.1.0E10) THEN
+                  vx(i) = xvel(j)*vsound
+                  vy(i) = yvel(j)*vsound
+                  vz(i) = zvel(j)*vsound
+               ELSE
+                  vx(i) = (vx(i) + xvel(j)*vsound)/2.0
+                  vy(i) = (vy(i) + yvel(j)*vsound)/2.0
+                  vz(i) = (vz(i) + zvel(j)*vsound)/2.0
+               ENDIF
+            ENDIF
+ 220     CONTINUE
+ 240  CONTINUE
+
+      END SUBROUTINE cartvel

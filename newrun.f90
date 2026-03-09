@@ -1,0 +1,97 @@
+      SUBROUTINE newrun
+!************************************************************
+!                                                           *
+!  This subroutine is the driver for the set up of a new    *
+!     simulation.                                           *
+!                                                           *
+!************************************************************
+
+      use idims
+
+      use files
+      use task
+      use actio
+      use logun
+
+      implicit none
+
+      CHARACTER(len=7) ::  where='newrun'
+!
+!--General set up
+!
+      WRITE (*, 99001)
+99001 FORMAT (' GENERAL SET UP', //)
+      WRITE (*, 99002)
+99002 FORMAT (' give name of the run (20 char.)')
+      READ (*, 99003) namerun
+      WRITE (namenextrun,99003) namerun
+99003 FORMAT (A20)
+!
+!--Write label of run
+!
+      IF (iprint /= 6) OPEN (iprint, FILE='setup_log.txt')
+      CALL labrun
+
+      WRITE (*, 99004)
+99004 FORMAT (' type of initialization?', /, &
+              ' start from scratch         : scratch (s)', /, &
+              ' using existing files       : exist (e)' )
+      READ (*, 99005) what
+99005 FORMAT (A7)
+!
+!--Start from scratch
+!
+      IF (what.EQ.'scratch' .OR. what.EQ.'s') THEN
+         WRITE (*, 99006)
+99006    FORMAT (' name of binary file (7 char. max)')
+         READ (*, 99005) file1
+!!       WRITE (*,*) 'MAXIMUM RECORD LENGTH = ',imaxrec
+!!       OPEN (idisk1, FILE=file1, STATUS='unknown', FORM='unformatted',
+!!   &        RECL=imaxrec)
+         OPEN (idisk1, FILE=file1, STATUS='unknown', FORM='unformatted')
+         CALL setpart
+         CALL inform(where)
+         CALL wdump(idisk1)
+         CLOSE (idisk1)
+      ENDIF
+!
+!--Use existing dumps to create new dump
+!
+      IF (what(1:5).EQ.'exist' .OR. what.EQ.'e') THEN
+         WRITE (*, 99007)
+99007    FORMAT (' name of the first binary file?')
+         READ (*, 99005) file1
+         WRITE (*, 99008)
+99008    FORMAT (' name of the second binary file?')
+         READ (*, 99005) file2
+         WRITE (*, 99009)
+99009    FORMAT (' name of the resulting binary file?')
+         READ (*, 99005) file3
+!!       WRITE(*,*) 'MAXIMUM RECORD LENGTH = ',imaxrec
+!!       OPEN (idisk1, FILE=file1, STATUS='unknown', FORM='unformatted',
+!!   &        RECL=imaxrec)
+         OPEN (idisk1, FILE=file1, STATUS='unknown', FORM='unformatted')
+!!       OPEN (idisk2, FILE=file2, STATUS='unknown', FORM='unformatted',
+!!   &        RECL=imaxrec)
+         OPEN (idisk2, FILE=file2, STATUS='unknown', FORM='unformatted')
+!!       OPEN (idisk3, FILE=file3, STATUS='unknown', FORM='unformatted',
+!!   &        RECL=imaxrec)
+         OPEN (idisk3, FILE=file3, STATUS='unknown', FORM='unformatted')
+         CALL addump
+         CALL inform(where)
+         CALL wdump(idisk3)
+         CLOSE (idisk3)
+         CLOSE (idisk2)
+         CLOSE (idisk1)
+      ENDIF
+!
+!--Write output
+!
+      CALL header(where)
+      CALL prout(where)
+!
+!--Terminate run
+!
+      CALL endrun
+
+      END SUBROUTINE newrun

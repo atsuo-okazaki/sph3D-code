@@ -1,0 +1,187 @@
+      SUBROUTINE treef(m,npart,h,acc,igrav,fsx,fsy,fsz,epot)
+!************************************************************
+!                                                           *
+!  Subroutine by W. Press (11/21/86). Given particle number *
+!     M and cutoff radius R, returns a list NEARL(1..NLIST) *
+!     of particles within a distance RCUT, and returns      *
+!     three components of gravitational force on M due go   *
+!     all particles outside RCUT.  This routine presumes    *
+!     that subroutine MTREE has previously been called.     *
+!  Updated 15/3/93 for individual timesteps as in Julio's   *
+!     code.                                                 *
+!                                                           *
+!************************************************************
+
+      use idims
+
+!---- treecom.mod <-- treecom.f90 for non-parallel simulation
+!---- treecom.mod <-- treecom_P.f90 for parallel simulation
+      use treecom
+      use logun
+      use debug
+      use phase
+      use ptmass
+      use kerne
+!---- neighbor.mod <-- neighbor.f90 for non-parallel simulation
+!---- neighbor.mod <-- neighbor_P.f90 for parallel simulation
+      use neighbor
+      use current
+      use useles
+
+      implicit none
+
+      INTEGER(I4B) :: m, npart, igrav, i, j, n, node, iptn, mpar
+      INTEGER(I4B) :: istack, nlistga, nlistgn
+      INTEGER(I4B) :: nstack(100), listga(mmax), listgn(mmax)
+      REAL(DP) :: h(idim), acc, accpar, fsx, fsy, fsz, epot, &
+                 rrx, rry, rrz, hn,hmean2, rcut2, rr, rcutmn, &
+                 qradn, qcut2, qrr, hm, dxi, dyi, dzi
+      CHARACTER(len=7) :: where='treef'
+
+      if (.not. allocated(neighb)) allocate (neighb(nlmax,idim))
+
+!--Allow for tracing flow
+!
+!      IF (itrace.EQ.'all') WRITE(iprint,250)
+  250 FORMAT(' entry subroutine treef')
+!
+!--Accreted particles not in tree
+!
+      IF (iphase(m).EQ.-1) CALL error(where, 1)
+!
+!--Point masses no longer in tree - gravity and neighbours done in gforspt.f
+!
+      IF (iphase(m).GE.1 .AND. (.NOT.(iptintree))) CALL error(where, 2)
+
+!---- For testing the code if it works when neighbors more
+!     than nlmax are neglected
+ 99   CONTINUE
+
+      IF (iphase(m).GE.1) THEN
+         DO i = 1, nptmass
+            IF (listpm(i).EQ.m) THEN
+               iptn = i
+               nptlist(iptn) = 0
+               GOTO 50
+            ENDIF
+         END DO
+      ENDIF
+
+ 50   nneigh(m) = 0
+      ilen(m) = 0
+      accpar = acc**2
+      fsx = 0.
+      fsy = 0.
+      fsz = 0.
+      epot = 0.
+      rrx = rx(m)
+      rry = ry(m)
+      rrz = rz(m)
+      nlistga = 0
+      nlistgn = 0
+      istack = 0
+      mpar = m
+      hm = h(m)
+ 100  node = isib(mpar)
+      IF (node.NE.0) THEN
+         istack = istack + 1
+         nstack(istack) = node
+ 150     IF (istack.NE.0) THEN
+            n = nstack(istack)
+            istack = istack - 1
+            dxi = rx(n) - rrx
+            dyi = ry(n) - rry
+            dzi = rz(n) - rrz
+            rr = dxi*dxi + dyi*dyi + dzi*dzi
+!
+!--Decide whether to open up the node:
+!     new if structure
+!
+            IF (n.GT.natom) THEN
+               rcutmn = (hm + hnode(n))*radkernel/2.0
+               qradn = qrad(n)
+               qcut2 = (qradn + rcutmn)**2
+               qrr = qradn**2
+               IF (rr.LT.qcut2) THEN
+                  j = idau(n)
+                  istack = istack + 1
+                  nstack(istack) = j
+                  istack = istack + 1
+                  nstack(istack) = isib(j)
+               ELSEIF (igrav.NE.0 .AND. accpar*rr.LT.qrr) THEN
+                  j = idau(n)
+                  istack = istack + 1
+                  nstack(istack) = j
+                  istack = istack + 1
+                  nstack(istack) = isib(j)
+               ELSE
+                  nlistgn = nlistgn + 1
+                  listgn(nlistgn) = n
+               ENDIF
+            ELSE
+!
+!--This line was altered for individual timesteps
+!
+               hn = h(n)
+               rcut2 = ((hm + h(n))*radkernel/2.0)**2
+               IF (rr.LT.rcut2 .AND. iphase(n).EQ.0 .AND. &
+                                               iphase(m).EQ.0) THEN
+                  nneigh(m) = nneigh(m) + 1
+
+!CCCCCCCCC                  IF (.NOT.((hm.LT.hn .OR.
+!CCCCCCCCC     &                 (hm.EQ.hn .AND. n.LT.m))
+!CCCCCCCCC     &                 .AND. iscurrent(n).EQ.1)) THEN
+
+                  ilen(m) = ilen(m) + 1
+                  IF (ilen(m).LE.nlmax) THEN
+                     neighb(ilen(m),m) = n
+!c                  ELSE
+!c                     WRITE (iprint,*) 'nlmax EXCEEDED',ilen(m),
+!c     &                    nlmax, m
+!c                     WRITE (iprint,*) '(x=',x(m),', y=',y(m),
+!c     &                                ', z=',z(m),', h=',h(m),')'
+!c                     WRITE (iprint,*) '( RCUT=', SQRT(rcut2), ' )'
+!c                     CALL quit
+                  ENDIF
+!CCCCCCCCC                  ENDIF
+
+               ELSE
+                  nlistga = nlistga + 1
+                  listga(nlistga) = n
+               ENDIF
+
+               IF (iptintree .AND. iphase(m).GE.1 .AND. &
+                                     iphase(n).EQ.0) THEN
+                  IF (hm.GT.hn .AND. iphase(m).EQ.4) THEN
+                     hmean2 = (hm + 2.0*hn)**2
+                  ELSE
+                     hmean2 = rcut2
+                  ENDIF
+                  IF (rr.LT.hmean2) THEN
+                     nptlist(iptn) = nptlist(iptn) + 1
+                     nearpt(iptn, nptlist(iptn)) = n
+                  ENDIF
+               ENDIF
+
+            ENDIF
+            GOTO 150
+         ENDIF
+         mpar = ipar(mpar)
+         GOTO 100
+      ENDIF
+!
+!--Calculate gravity forces if needed
+!
+      IF (igrav.NE.0) THEN
+!
+!--Get force from the atomic list
+!
+         CALL gforsa(m, nlistga, listga, fsx, fsy, fsz, epot)
+!
+!--Get force from the node list
+!
+         CALL gforsn(m, nlistgn, listgn, fsx, fsy, fsz, epot)
+      ENDIF
+      epot = -epot
+
+      END SUBROUTINE treef

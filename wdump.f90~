@@ -1,0 +1,114 @@
+      Subroutine wdump (idisk1)
+!************************************************************
+!                                                           *
+!  This routine writes a dump on disk                       *
+!                                                           *
+!************************************************************
+
+!!      use mpi_mod
+      use idims
+
+      use units
+      use part
+      use densi
+      use carac
+      use typef
+      use cgas
+      use fracg
+      use kerne
+      use gtime
+      use bodys
+      use ener
+      use recor
+      use polyk2
+      use debug
+      use phase
+      use ptmass
+      use binary
+      use torq
+      use timei
+      use stepopt
+      use winds
+      use cooldata
+
+      implicit none
+
+      INTEGER(I4B) :: idisk1, i, ncool
+      INTEGER(I4B), dimension(idim) :: idxcool
+      CHARACTER(len=7) :: where='wdump'
+
+!
+!--Write
+!
+      irec = irec + 1
+
+!!      IF (myrank.eq.0) THEN
+         WRITE (idisk1,ERR=100) udist, umass, utime,               &
+             npart, n1, n2, gt, gamma, rhozero, RK2,               &
+             (h(i),i=1,npart), escap, tkin, tgrav, tterm,          &
+             (x(i),i=1,npart), (y(i),i=1,npart), (z(i),i=1,npart), &
+             (vx(i),i=1,npart), (vy(i),i=1,npart),                 &
+             (vz(i),i=1,npart), (u(i),i=1,npart),                  &
+             (pmass(i),i=1,npart), (rho(i),i=1,npart),             &
+             (dgrav(i),i=1,npart), dtmax, (isteps(i),i=1,npart),   &
+             (iphase(i),i=1,npart), nptmass,                       &
+             (listpm(i),i=1,nptmass), (spinx(i),i=1,nptmass),      &
+             (spiny(i),i=1, nptmass), (spinz(i),i=1,nptmass),      &
+             (angaddx(i),i=1,nptmass), (angaddy(i),i=1,nptmass),   &
+             (angaddz(i),i=1, nptmass), anglostx, anglosty,        &
+             anglostz, nreassign, naccrete, nkill, specang,        &
+             ptmassin, (spinadx(i),i=1,nptmass),                   &
+             (spinady(i),i=1,nptmass), (spinadz(i),i=1,nptmass),   &
+             (torqt(i),i=1,npart), (torqg(i),i=1,npart),           &
+             (torqp(i),i=1,npart), (torqv(i),i=1,npart),           &
+             (torqc(i),i=1,npart), (ibelong(i),i=1,npart),         &
+             (iantigr(i),i=1,npart)
+
+!         IF (encal == 'c' .AND. gt > 0.0) THEN
+!            ncool = 0
+!            DO i=1,npart
+!               IF (iphase(i) == 0) THEN
+!                  IF (tempfin(i) /= tempini(i)) THEN
+!                     ncool = ncool+1
+!                     idxcool(ncool) = i
+!                  END IF
+!               END IF
+!            END DO
+!            IF (ncool > 0) THEN
+!               WRITE (icoolpr,ERR=100) gt, ncool,  &
+!                   (idxcool(i),i=1,ncool),          &
+!                   (x(idxcool(i)),i=1,ncool),       &
+!                   (y(idxcool(i)),i=1,ncool),       &
+!                   (z(idxcool(i)),i=1,ncool),       &
+!                   (rho(idxcool(i)),i=1,ncool),     &
+!                   (h(idxcool(i)),i=1,ncool),       &
+!                   (pmass(idxcool(i)),i=1,ncool),   &
+!                   (tempini(idxcool(i)),i=1,ncool), &
+!                   (tempfin(idxcool(i)),i=1,ncool), &
+!                   (tcool(idxcool(i)),i=1,ncool)
+!            END IF
+!         END IF
+!!      END IF
+
+      DO i=1,npart
+         torqt(i) = 0.
+         torqg(i) = 0.
+         torqp(i) = 0.
+         torqv(i) = 0.
+         torqc(i) = 0.
+      ENDDO
+
+!!      IF (myrank.eq.0) then
+         ENDFILE idisk1
+         BACKSPACE idisk1
+!!      ENDIF
+
+      ipos = irec
+
+      RETURN
+!
+!--An error as occured while writing
+!
+  100 CALL error (where, 1)
+
+      END SUBROUTINE wdump

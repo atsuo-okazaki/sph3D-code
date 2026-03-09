@@ -1,0 +1,8 @@
+      MODULE savernd
+
+      implicit none
+      save
+
+      INTEGER(I4B) :: idum
+
+      END MODULE savernd

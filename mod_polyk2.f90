@@ -1,0 +1,10 @@
+      MODULE polyk2
+
+      use idims
+      implicit none
+      save
+
+      REAL(DP) :: rhozero, RK21, RK22, RK23, rhocrit, rhocrit2, &
+                     rhocrit3, rhozerox
+
+      END MODULE polyk2

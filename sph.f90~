@@ -1,0 +1,541 @@
+      PROGRAM sph
+!************************************************************
+!************************************************************
+!************************************************************
+!******************                    **********************
+!******************    S    P    H     **********************
+!******************                    **********************
+!************************************************************
+!************************************************************
+!************************************************************
+!                                                           *
+!  This is a three-dimensional hydro code based on the      *
+!  so-called smoothed particles hydrodynamics method.       *
+!                                                           *
+!************************************************************
+!                                                           *
+!  W. Benz        Los Alamos National Laboratory 31/08/86   *
+!                 Harvard College Observatory    10/03/87   *
+!                                                           *
+!  I. A. Bonnell  University de Montreal         XX/XX/91   *
+!                 University of Cambridge, UK    01/10/92   *
+!                                                           *
+!  M. R. Bate     University of Cambridge, UK    01/10/92   *
+!                                                           *
+!************************************************************
+!                                                           *
+!  Modifications by: I. A. Bonnell      UdeM    28/05/92    *
+!                                                           *
+!  (1) random number generator from Numerical Recipes: ran1 *
+!  (2) cylindrical boundaries (ibound = 2): ghosp2          *
+!  (3) gforsa and gforsn are parallelized                   *
+!  (4) generator of axial density perturbations (ibound = 2)*
+!                                                           *
+!  Major Modifications by: M. R. Bate   UofCam  31/01/95    *
+!                                                           *
+!  (1) individual particle timesteps                        *
+!  (2) inclusion of accreting, massive point masses (sink   *
+!         particles) with boundaries, identified by iphase. *
+!  (3) corrected ghost boundaries                           *
+!  (4) constant pressure boundaries                         *
+!                                                           *
+!  Major Modifications by: M. R. Bate and R. Klessen        *
+!                                         MPIA  02/02/96    *
+!                                                           *
+!  (1) switchable between BINARY TREE and GRAPE board       *
+!         computation of gravity and neighbours lists       *
+!                                                           *
+!************************************************************
+!  General Description                                      *
+!                                                           *
+!  This code allows three different type of tasks to be     *
+!  done according to variable "job" . Variable job is read  *
+!  from the command line.                                   *
+!                                                           *
+!  1) job=initial                                           *
+!     -----------                                           *
+!     this allows to compute new initial conditions. This   *
+!     can be done by either starting from scratch or by     *
+!     adding two existing situations together               *
+!     (see subroutine newrun)                               *
+!                                                           *
+!  2) job=transfer                                          *
+!     -------------                                         *
+!     this allows to copy one or several dumps from one     *
+!     file to another one. During this transfer  there is   *
+!     a possibility of making changes in the various        *
+!     quantities                                            *
+!     (see subroutine transfd)                              *
+!                                                           *
+!  3) job=evolution                                         *
+!     -------------                                         *
+!     this allows to compute the actual evolution of the    *
+!     system by specifying the various forces to be         *
+!     included                                              *
+!     (see subroutine evol)                                 *
+!                                                           *
+!************************************************************
+!                                                           *
+!  Running SPH                                              *
+!  ===========                                              *
+!                                                           *
+!  The main option of the code, JOB, is read from the       *
+!  command line. If JOB=INITIAL or TRANSFER, the code goes  *
+!  into an interactive mode. Just answer the questions      *
+!  after having read the informations below. If EVOLUTION   *
+!  is chosen, the code is looking for a file called INSPH   *
+!  where the various options have to be defined.            *
+!                                                           *
+!  files used and written by the code:                      *
+!  -----------------------------------                      *
+!                                                           *
+!  1) If JOB=INITIAL and the SCRATCH option is chosen, then *
+!     the code does not need any files but will produce     *
+!     a binary file containing all the quantities needed    *
+!     for the evolution part. Furthemore, the code produces *
+!     an ascii file callled OUTSPH summarizing the code's   *
+!     actions.                                              *
+!  2) If JOB=INITIAL and the EXIST option is chosen, then   *
+!     the code will require two files containing data to    *
+!     combine them into a third file. An ascii file OUTSPH  *
+!     is also produced.                                     *
+!  3) If JOB=TRANSFER the code needs an existing binary file*
+!     and upon completion it will create another one. Again *
+!     an ascii file OUTSPH is created                       *
+!  4) If JOB=EVOLUTION the code needs a binary file with    *
+!     initial conditions produces by the INITIAL evolution  *
+!     or the file resulting from a prior evolution run.     *
+!     Again the file OUTSPH is produced and contains all    *
+!     informations regarding the status of the evolution.   *
+!     It is important to check the file periodically and    *
+!     monitor the total energy and angular momentum for     *
+!     example since both should be conserved (within 2% say)*
+!                                                           *
+!  Various important details                                *
+!  -------------------------                                *
+!  1) The code checks the size of the binary file. If it    *
+!     grows beyond 10Mb it opens a new one. To keep track   *
+!     of all these files, the code assumes that the name of *
+!     the binary file is of the form XXXXXYY. XXXXX being   *
+!     characters and YY numbers (typically 01 at the start).*
+!     When a new file is created, its name will be XXXXXYY+1*
+!     (see subroutine FILE)                                 *
+!  2) The number of neighbors for each particles is  stored *
+!     using the parameter ILIST. If dimensions too small    *
+!     the code will issue a warning message but do the job. *
+!     The dimensions should however be changed.             *
+!  3) The code checks periodically for a file called        *
+!     MESSAGE. This file permits to change some of the      *
+!     options defined in the input deck during the code's   *
+!     execution (see MESOP)                                 *
+!  4) The debug option IDEBUG should be used with care since*
+!     it produces a lont of output! ITRACE can be set to all*
+!     to trace the code through the various subroutines in  *
+!     case of misterious errors!                            *
+!  5) All forces can be turned off or on at will except for *
+!     pressure gradients than should always be on.          *
+!  6) The code in its present version assumes a perfect gas *
+!     equation of state (see EOSPG). This can be complicated*
+!     at will!.                                             *
+!  7) The number of particles that can be used is determined*
+!     by the parameter IDIM. The number of particles NPART  *
+!     has to be less (or equal) to IDIM.                    *
+!  8) Before anything can be done with the code, the proper *
+!     units have to be defined (see UNIT). The number to    *
+!     input are the total mass and a length scale. These    *
+!     numbers are actually inside the code and not options  *
+!     since for any particular choice of units, they should *
+!     not be changed anymore! Once both numbers have been   *
+!     coded in, the code determines all other units.        *
+!  9) The sum of the mass of all particles should be equal 1*
+!     unless, the total mass given in UNIT is not the one   *
+!     represented by the particles.                         *
+!                                                           *
+!                                                           *
+!-----------------------------------------------------------*
+!                                                           *
+!  job=evolution input deck (see OPTIONS)                   *
+!  --------------------------------------                   *
+!                                                           *
+!  namerun  = name of the run                               *
+!  file1    = name of file containing starting dump and on  *
+!             which new dumps are added                     *
+!  varsta   = entropy : use entropy as variable of state    *
+!           = intener : use specific internal energy as     *
+!                       variable of state                   *
+!                                                           *
+!  --------------                                           *
+!  igrp     = 0       : no pressure gradients               *
+!             1       : with pressure gradients             *
+!  igphi    = 0       : no self-gravity                     *
+!             1       : with self-gravity                   *
+!  ifsvi    = 0       : no artificial viscosity             *
+!             1       : with artificial viscosity           *
+!  ifcor    = 0       : no coriolis forces                  *
+!             1       : with coriolis forces                *
+!  ichoc    = 0       : no heating due to artif. viscosity  *
+!             1       : with heating due to artif. viscosity*
+!  iener    = 0       : no total energy conservation        *
+!             1       : with total energy conservation      *
+!  damp     = value of general damping coefficient          *
+!  ibound   = 0       : no boundaries                       *
+!             1       : with reflective boundaries          *
+!  iexf     = 0       : no external forces                  *
+!          >= 1       : allow for external forces           *
+!  iexpan   = 0       : no general expansion                *
+!             1       : general expansion superposed        *
+!                                                           *
+!  the external force, the boundaries and the general       *
+!  damping are NOT considered in the energy equation.       *
+!                                                           *
+!  --------------                                           *
+!  nstep    = frequency at which timesteps are written on   *
+!             disk                                          *
+!  tdump    = time between dumps (alternative to number     *
+!             of steps between dumps)                       *
+!  tnext    = time of next dump                             *
+!  tol      = tolerance used by the Runge-Kutta integrator  *
+!  ipos     = 9999    : use last dump as starting dump      *
+!           = number  : use number as starting dump (all    *
+!                       dumps behond number are destroyed!) *
+!  tmax     = max time in minute allowed for the job        *
+!  tstop    = time (computer unit) at which the program     *
+!             will stop.                                    *
+!                                                           *
+!  only if iexpan= 1                                        *
+!  -----------------                                        *
+!  vexpan    =  expansion velocity of the frame of ref. in  *
+!               cm/s.                                       *
+!                                                           *
+!  only if ifcor=1                                          *
+!  ---------------                                          *
+!  omeg0     =  angular velocity of the reference frame in  *
+!               1/s                                         *
+!                                                           *
+!  only if ibound=1                                         *
+!  ----------------                                         *
+!  (all boundaries are used, if only one type is desired    *
+!   it is necessary to set the other far away ... )         *
+!                                                           *
+!  rmax      =  max. radius for spherical boundary          *
+!  xmin,xmax =  min and max x coord. for boundary           *
+!  ymin,ymax =  min and max y coord. for boundary           *
+!  zmin,zmax =  min and max z coord. for boundary           *
+!                                                           *
+!                                                           *
+!************************************************************
+!                                                           *
+!  alphabetical list of common variables                    *
+!  =====================================                    *
+!                                                           *
+!  variable  common block   description                     *
+!- - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*
+!                                                           *
+!  alpha        (shock) : coefficient for bulk viscosity    *
+!  angto        (angm ) : total angular momentum            *
+!  angx         (angm ) : x componant of total angular mom. *
+!  angy         (angm ) : y componant of total angular mom. *
+!  angz         (angm ) : z componant of total angular mom. *
+!  artvix(idim) (artv1) : x componant of artif. viscosity   *
+!                         pressure gradient                 *
+!  artviy(idim) (artv1) : y componant of artif. viscosity   *
+!                         pressure gradient                 *
+!  artviz(idim) (artv1) : z componant of artif. viscosity   *
+!                         pressure gradient                 *
+!  beta         (shock) : coefficient for Neumann-Richtmeyer*
+!                         viscosity                         *
+!  cmx1         (out1 ) : x coord. of c.m. body 1           *
+!  cmy1         (out1 ) : y coord. of c.m. body 1           *
+!  cmz1         (out1 ) : z coord. of c.m. body 1           *
+!  cmx2         (out2 ) : x coord. of c.m. body 2           *
+!  cmy2         (out2 ) : y coord. of c.m. body 2           *
+!  cmz2         (out2 ) : z coord. of c.m. body 2           *
+!  cnormk       (kerne) : normalisation constant of kernel  *
+!  damp         (dissi) : general damping coefficient       *
+!  dq(idim)     (ener1) : heating due to shock dissipation  *
+!  dt           (time ) : current timestep                  *
+!  dvtable      (table) : spacing between table values      *
+!  encal        (cgas ) : eos/energy calculation method flag*
+!  escap        (fracg) : mass of escapors                  *
+!  file1        (file ) : name of file number 1             *
+!  file2        (file ) : name of file number 2             *
+!  file3        (file ) : name of file number 3             *
+!  fmass(itable)(table) : mass of particle as a funct. of r *
+!  fmas1        (bodys) : fraction of total mass in body 1  *
+!  fmas2        (bodys) : fraction of total mass in body 2  *
+!  fnbtot       (units) : number of total mass              *
+!  fpoten(itable)(table): potential energy as a funct. of r *
+!  fx(idim)     (force) : x componant of total force        *
+!  fy(idim)     (force) : y componant of total force        *
+!  fz(idim)     (force) : z componant of total force        *
+!  gamma        (cgas ) : value of gamma                    *
+!  gradpx(idim) (gradp) : x componant of pressure gradients *
+!  gradpy(idim) (gradp) : y componant of pressure gradients *
+!  gradpz(idim) (gradp) : z componant of pressure gradients *
+!  gravx(idim)  (gravi) : x componant of body forces        *
+!  gravy(idim)  (gravi) : y componant of body forces        *
+!  gravz(idim)  (gravi) : z componant of body forces        *
+!  grwij(itable)(table) : gradient of kernel table          *
+!  gt           (gtime) : current global time in code units *
+!  h(idim)      (kerne) : smoothing length                  *
+!  hma1         (out1 ) : max h for body 1                  *
+!  hma2         (out2 ) : max h for body 2                  *
+!  hmi1         (out1 ) : min h for body 1                  *
+!  hmi2         (out2 ) : min h for body 2                  *
+!  ibound       (typef) : flag to allow boundaries          *
+!  icell(i,j,k) (nlist) : chaining mesh cells               *
+!  ichoc        (typef) : flag to allow shock heating       *
+!  idebug       (debug) : debug option                      *
+!  idisk1       (logun) : logical unit number for disk file *
+!  idisk2       (logun) : logical unit number for disk file *
+!  idisk3       (logun) : logical unit number for disk file *
+!  idist        (new  ) : type of distribution for setting  *
+!                         the initial particles             *
+!  idumy        (random): number to initialize generator    *
+!  iener        (typef) : flag to allow total energy cons.  *
+!  iexf         (typef) : flag to allow external forces     *
+!  iexpan       (typef) : flag to allow expansion           *
+!  ifcor        (typef) : flag to allow coriolis forces     *
+!  ifsvi        (typef) : flag to allow arti. viscosity     *
+!  igrp         (typef) : flag to allow pressure gradients  *
+!  igphi        (typef) : flag to allow body forces         *
+!  ipos         (recor) : record number wanted on disk      *
+!  iprint       (logun) : logical unit number for print out *
+!  irec         (recor) : record number on disk             *
+!  iterm        (logun) : logical unit number for read      *
+!  itrace       (debug) : flag to allow flow tracing        *
+!  job          (actio) : main option that tells the code   *
+!                         what option it has to run         *
+!  n1           (bodys) : number of particles in body 1     *
+!  n2           (bodys) : number of particles in body 2     *
+!  namerun      (actio) : name of the run                   *
+!  ncount       (tming) : number of timestep since last dump*
+!                         was written on disk               *
+!  np           (new  ) : number of particles at initial.   *
+!  npart        (part ) : total number of particles         *
+!  nstep        (tming) : number of  timestep between disk  *
+!                         dumps                             *
+!  tdump        (tming) : time between disk dumps           *
+!                         (alternative to number of steps)  *
+!  tnext        (tming) : time of next dump                 *
+!  omeg0        (rotat) : angular velocity of frame of ref. *
+!  partm        (new  ) : particles mass                    *
+!  pdv(idim)    (ener1) : pdv work on particle              *
+!  pmass(idim)  (carac) : mass of particles                 *
+!  poten(idim)  (ener1) : potential energy of particle      *
+!  pr(idim)     (eosq ) : pressure at particle locations    *
+!  qphys(idco)  (tcond) : physical thermal conductivity     *
+!  rho(idim)    (densi) : density at particle locations     *
+!  rmax         (rbnd ) : max radius of boundary            *
+!  romax1       (out1 ) : max density in body 1             *
+!  romax2       (out2 ) : max density in body 2             *
+!  romean1      (out1 ) : mean density body 1               *
+!  romean2      (out2 ) : mean density body 2               *
+!  v0           (space) : frac. of h of init. lattice cell  *
+!  tgrav        (ener2) : total gravitational energy        *
+!  thermal1     (new  ) : either entropy or int. energy at  *
+!                         initialisation                    *
+!  thermal2     (new  ) : either entropy or int. energy at  *
+!                         initialisation                    *
+!  thermal3     (new  ) : either entropy or int. energy at  *
+!                         initialisation                    *
+!  thick        (new  ) : thickness ratio of initial plate  *
+!  tkin         (ener2) : total kinetic energy              *
+!  tmax         (tming) : maximum time allowed for the job  *
+!  totm         (new  ) : total mass represented by part.   *
+!  trot         (ener2) : total rotational energy           *
+!  tstep        (tming) : cpu time needed for one timestep  *
+!  tstop        (tming) : time at which simulation has to   *
+!                         stop (code units)                 *
+!  tterm        (ener2) : total thermal energy              *
+!  u(idim)      (part ) : total specific internal energy    *
+!  udens        (units) : unit of density                   *
+!  udist        (units) : unit of length                    *
+!  uergg        (units) : unit of energy per unit mass      *
+!  uergcc       (units) : unit of pressure                  *
+!  umass        (units) : unit of mass                      *
+!  utime        (units) : unit of time                      *
+!  varsta       (varet) : variable of state beside density  *
+!  vcmx1        (out1 ) : x comp. of velocity of cm body 1  *
+!  vcmy1        (out1 ) : y comp. of velocity of cm body 1  *
+!  vcmz1        (out1 ) : z comp. of velocity of cm body 1  *
+!  vcmx2        (out2 ) : x comp. of velocity of cm body 2  *
+!  vcmy2        (out2 ) : y comp. of velocity of cm body 2  *
+!  vcmz2        (out2 ) : z comp. of velocity of cm body 2  *
+!  version      (infor) : version of the code               *
+!  vexpan       (expan) : expansion velocity                *
+!  vsmax        (eosq ) : maximum sound speed               *
+!  vsound(idim) (eosq ) : sound speed at particle locations *
+!  vvx1         (new  ) : x componant of velocity of center *
+!                         of mass body 1                    *
+!  vvx2         (new  ) : x componant of velocity of center *
+!                         of mass body 2                    *
+!  vvy1         (new  ) : y componant of velocity of center *
+!                         of mass body 1                    *
+!  vvy2         (new  ) : y componant of velocity of center *
+!                         of mass body 2                    *
+!  vvz1         (new  ) : z componant of velocity of center *
+!                         of mass body 1                    *
+!  vvz2         (new  ) : z componant of velocity of center *
+!                         of mass body 2                    *
+!  vx(idim)     (part ) : x componant of the part. velocity *
+!  vy(idim)     (part ) : y componant of the part. velocity *
+!  vz(idim)     (part ) : z componant of the part. velocity *
+!  what         (new  ) : gives type of initialisation      *
+!  wij(itable)  (table) : table of kernel values            *
+!  x(idim)      (part ) : x coordinate of the particles     *
+!  xmax         (rbnd ) : position of upper reflec. bound.  *
+!  xmin         (rbnd ) : position of lower reflec. bound.  *
+!  xx1          (new  ) : x coordinate of center of mass    *
+!                         body 1                            *
+!  xx2          (new  ) : x coordinate of center of mass    *
+!                         body 2                            *
+!  y(idim)      (part ) : y coordinate of the particles     *
+!  ymax         (rbnd ) : position of upper reflec. bound.  *
+!  ymin         (rbnd ) : position of lower reflec. bound.  *
+!  yy1          (new  ) : y coordinate of center of mass    *
+!                         body 1                            *
+!  yy2          (new  ) : y coordinate of center of mass    *
+!                         body 2                            *
+!  z(idim)      (part ) : z coordinate of the particles     *
+!  zmax         (rbnd ) : position of upper reflec. bound.  *
+!  zmin         (rbnd ) : position of lower reflec. bound.  *
+!  zz1          (new  ) : z coordinate of center of mass    *
+!                         body 1                            *
+!  zz2          (new  ) : z coordinate of center of mass    *
+!                         body 2                            *
+!                                                           *
+!************************************************************
+!                                                           *
+!  timing and memory requirements                           *
+!  ==============================                           *
+!                                                           *
+!  Both vary enormously with the various options chosen.    *
+!  Running time scales like NlogN.                          *
+!                                                           *
+!************************************************************
+
+      use mpi_mod
+      use idims
+
+      use infor
+      use actio
+      use debug
+
+      implicit none
+
+      REAL(DP) dummytime
+      REAL(DP) :: ran1
+!
+!--Version - date is date last updated with other code version changes
+!
+      version = 'SPH3D-PTM-MULTI-TDISKS+WINDS-COOLING-25APR2023'
+
+!   Same as version = 'SPH3D-PTM-DISKS+WINDS-COOLING-03MAY2010', but
+!
+!   Same as version = 'SPH3DT-PTMAS-DEC+ACC+CW-07MAY2008', but
+!     includes the effect of optically thin radiative cooling.
+!
+!     version = 'SPH3DT-PTMAS-DEC+ACC+CW-07MAY2008'
+!
+!   Same as version ='SPH3DT-PTMAS-DEC+ACC+CW-15FEB2007', but
+!     includes igeom=8 for a wind from an equatorial sector and
+!     have modifications mainly to enable wind accretion simulations.
+!     The way the wind parameters are given has also been changed from
+!     the 15-02-2007 version.
+!
+!     version = 'SPH3DT-PTMAS-DEC+ACC+CW-15FEB2007'
+!
+!   Same as version ='SPH3DT-PTMAS-DEC+ACC-SR11000-06JAN2006', but
+!     fixed a bug with ifsvi=6 option in forcei_P.f for decretion disk
+!     +accretion disk simulations and added an Shakura-Sunyaev viscosity
+!     parameter and SPH artificial viscosity parameter alpha_sph for
+!     polytropic disks. It also includes boundary types 94 (colliding
+!     stellar winds) and 99 (accretion disk with mass injection at the
+!     outer boundary.
+!
+!   Same as version ='SPH3DT-PTMAS-GRAPE-O4-1.0-MRB-17-04-98'
+!      but includes boundary types 92 and 93 and modified forcei(_P).f,
+!      in which the artificial viscosity parameter alpha is variable
+!      in space and time (beta=0) to emulates a contant Shakura-Suayev
+!      viscosity parameter. This version is tuned for HITACHI SR11000
+!      and uses IBM routine DSORTX instead of indexx in mtree_P.f.
+!
+!   Same as version ='SPH3DT-PTMAS-GRAPE-3.0-MRB-20-02-97' (sph3DTSP_GRAPE3_O4)
+!      but includes boundary types 90 and 91 and new grape_main_split.f
+!      from sph3DTSP_GRAPE3.
+!      Similar to sph3DTSP_GRAPE3 but includes variable type of
+!      Kernel (3rd and 4th order kernels) from sph3DTSP_GRAPE3_O4.
+!      ALSO, can be compiled with either single or double precision.
+!
+!   Similar to version 'SPH3DT-PTMAS-GRAPE-1.0-MRB-27-04-96'
+!
+!   Same as version 'SPH3D-TIMESTEPS-PTMAS-5.03-MRB-01-06-95' (infall8)
+!      but with TREE/GRAPE switchable computation.  Similar to
+!      version 'SPH3D-TIMESTEPS-PTMAS-5.01-MRB-01-02-95'
+!
+!   Same as version SPH3D-TIMESTEPS-PTMAS-4.01-MRB-30-01-94,
+!     but tidied up - all unused stuff thrown away (old boundaries,
+!     excessive memory use etc).
+!
+!   Same as version SPH3D-TIMESTEPS-PTMAS-3.01-MRB-16-05-94,
+!     with boundaries as used by Bate,Bonnell,Price 1995
+!     but compiled under FORTRAN 90.
+!
+      nproc  = 1
+      myrank = 0
+
+!#ifdef SR16K
+!      CALL XCLOCK(dummytime,7)
+!#endif
+
+!
+!--Set debug and trace indicator
+!
+      idebug = 'off'
+!!      idebug = 'toten'
+!!      idebug = 'setpart'
+      itrace = 'off'
+!      itrace = 'all'
+!
+!--Floating point number error checking (DCR C routine)
+!
+!      CALL floating
+!
+!--Read main main option for run
+!
+      CALL mainop
+!
+!--Initialize physical, mathematical and astronomical constants
+!
+      CALL constan
+!
+!--Define code's units
+!
+!!      CALL unit
+!
+!--Execute main option
+!
+!  1) define new initial conditions
+!
+      IF (job(1:7).EQ.'initial') CALL newrun
+!
+!  2) transfer dumps to another file
+!
+!      IF (job(1:8).EQ.'transfer') CALL transfd
+!
+!  3) integrate the system
+!
+      IF (job(1:9).EQ.'evolution') CALL evol
+!
+!  4) reduce output files
+!
+      IF (job(1:6).EQ.'reduce') CALL reduce
+!
+!  5) extract an output file
+!
+      IF (job(1:7).EQ.'extract') CALL extract
+
+      CALL quit
+
+      END PROGRAM sph

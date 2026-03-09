@@ -1,0 +1,222 @@
+      SUBROUTINE smoothd
+!************************************************************
+!                                                           *
+!  This subroutine smoothes the initial conditions.         *
+!                                                           *
+!************************************************************
+
+      use idims
+
+      use part
+      use table
+      use dum
+      use tlist
+      use typef
+      use carac
+      use densi
+      use kerne
+      use btree
+      use logun
+      use debug
+      use ghost
+      use current
+!---- neighbor.mod <-- neighbor.f90 for non-parallel simulation
+!---- neighbor.mod <-- neighbor_P.f90 for parallel simulation
+      use neighbor
+
+      implicit none
+
+      INTEGER(I4B) :: i, index, index1, ipart, ismooth, j, k, ntot
+      REAL(DP) :: sm(idim), q(idim)
+      REAL(DP) :: dwdx, dxx, hi, hmean, hmean21, hmean31, &
+               hmins, hmn, hmx, pmassi, pmassqi, smi, v2, wtij, &
+               xi, yi, zi
+
+!      EQUIVALENCE (sm, dumx), (q, dumz)
+
+      CHARACTER(len=1) :: iok
+!
+!--Allow for tracing flow
+!
+      IF (itrace.EQ.'all') WRITE (iprint, 99001)
+99001 FORMAT (' entry subroutine smooth')
+!
+!--Compute tables for kernel quantities
+!
+      CALL ktable
+!
+!--Make ghosts
+!
+      DO i = 1, npart
+         iscurrent(i) = 1
+      END DO
+
+      IF (ibound.EQ.1) CALL ghostp1(npart, x, y, z, vx, vy, vz, u, h)
+      IF (ibound.EQ.2) CALL ghostp2(npart, x, y, z, vx, vy, vz, u, h)
+!c      IF (ibound.EQ.3 .OR. ibound.EQ.8 .OR. ibound.GE.90)
+      IF (ibound.EQ.3 .OR. ibound.EQ.8 .OR. ibound.EQ.96 &
+         .OR. ibound.EQ.97) &
+                       CALL ghostp3(npart, x, y, z, vx, vy, vz, u, h)
+      ntot = npart + nghost
+!
+!--Build tree
+!
+      IF (igrape.EQ.0) THEN
+         WRITE(*,*) ' Making tree'
+         CALL insulate(1, ntot, npart, x, y, z, pmass, h)
+      ENDIF
+      acc = 50.
+!
+!--Smooth all needed quantities
+!
+      DO 300 ismooth = 1, 5
+         IF (ismooth.EQ.1) THEN
+            WRITE (*,*) ' smoothing density'
+            DO i = 1, npart
+               q(i) = 1.
+            END DO
+         ELSEIF (ismooth.EQ.2) THEN
+            WRITE (*,*) ' smoothing energy'
+            DO i = 1, npart
+               q(i) = u(i)/rho(i)
+            END DO
+         ELSEIF (ismooth.EQ.3) THEN
+            WRITE (*,*) ' smoothing velocity vx'
+            DO i = 1, npart
+               q(i) = vx(i)/rho(i)
+            END DO
+         ELSEIF (ismooth.EQ.4) THEN
+            WRITE (*,*) ' smoothing velocity vy'
+            DO i = 1, npart
+               q(i) = vy(i)/rho(i)
+            END DO
+         ELSEIF (ismooth.EQ.5) THEN
+            WRITE (*,*) ' smoothing velocity vz'
+            DO i = 1, npart
+               q(i) = vz(i)/rho(i)
+            END DO
+         ENDIF
+!
+!--Initialise array
+!
+         DO i = 1, npart
+            sm(i) = 0.
+         END DO
+
+         WRITE (*,*) ' do you want a minimum h for smoothing? (y/n)'
+         READ (*,99010) iok
+99010    FORMAT (A1)
+         IF (iok.EQ.'y') THEN
+            hmn = 1000.
+            hmx = 0.
+            DO i = 1, npart
+               IF (h(i).LT.hmn) hmn = h(i)
+               IF (h(i).GT.hmx) hmx = h(i)
+            END DO
+            hmins = hmn
+            WRITE (*,99011) hmn, hmx
+99011       FORMAT ('enter minimum smoothing length', &
+                 'min h = ',1PE11.4,'  max h = ',1PE11.4)
+            READ (*,*) hmins
+         ENDIF
+!
+!--Get neighbours
+!
+         IF (igrape.EQ.0) THEN
+            CALL insulate(3, ntot, npart, x, y, z, pmass, h)
+         ELSEIF (igrape.EQ.1) THEN
+            CALL insulate(4, ntot, npart, x, y, z, pmass, h)
+         ENDIF
+!
+!--Compute smoothed variable for each particle
+!
+         DO 100 ipart = 1, npart
+            xi = x(ipart)
+            yi = y(ipart)
+            zi = z(ipart)
+            pmassi = pmass(ipart)
+            pmassqi = pmassi*q(ipart)
+            hi = h(ipart)
+            IF (hi.GT.hmins) GOTO 100
+
+            smi = 0.
+            DO k = 1, ilen(ipart)
+               j = neighb(k,ipart)
+!
+!--Define mean h
+!
+               hmean = 0.5*(hi + h(j))
+               hmean21 = 1./hmean**2
+               hmean31 = hmean21/hmean
+               v2 = ((xi-x(j))**2 +(yi-y(j))**2 +(zi-z(j))**2)*hmean21
+!
+!--Get kernel quantities from interpolation in table
+!
+               index = v2/dvtable
+               dxx = v2 - index*dvtable
+               index1 = index + 1
+               IF (index1.GT.itable) index1 = itable
+               dwdx = (wij(index1) - wij(index))/dvtable
+               wtij = (wij(index) + dwdx*dxx)*hmean31
+!
+!--Add contribution
+!
+               smi = smi + q(j)*pmass(j)*wtij
+               sm(j) = sm(j) + pmassqi*wtij
+
+            END DO
+            sm(ipart) = sm(ipart) + smi
+ 100     CONTINUE
+!
+!--Normalisation
+!
+         DO i = 1, npart
+            sm(i) = cnormk*(sm(i) + q(i)*pmass(i)/h(i)**3)
+         END DO
+!
+!--Load appropriate array
+!
+         IF (ismooth.EQ.1) THEN
+            DO i = 1, npart
+               rho(i) = sm(i)
+            END DO
+         ELSEIF (ismooth.EQ.2) THEN
+            DO i = 1, npart
+               u(i) = sm(i)
+            END DO
+         ELSEIF (ismooth.EQ.3) THEN
+            DO i = 1, npart
+               vx(i) = sm(i)
+            END DO
+         ELSEIF (ismooth.EQ.4) THEN
+            DO i = 1, npart
+               vy(i) = sm(i)
+            END DO
+         ELSEIF (ismooth.EQ.5) THEN
+            DO i = 1, npart
+               vz(i) = sm(i)
+            END DO
+         ENDIF
+ 300  CONTINUE
+
+      DO i = 1, npart
+         iscurrent(i) = 0
+      END DO
+
+!     Since 9 Jan. 2012 (A. Okazaki)
+!---- Instead of using 'QUIVALENCE (sm, dumx), (q, dumz)'
+!     use the direct substitution
+      DO i=1,npart
+         dumx(i) = sm(i)
+         dumz(i) = q(i)
+      ENDDO
+
+!
+!--If idebug='density' the densities are dumped
+!
+      IF (idebug.EQ.'density') THEN
+         WRITE (iprint, 99002) (rho(i), i=1, npart)
+99002    FORMAT (1X, 6(1PE12.5,1X))
+      ENDIF
+
+      END SUBROUTINE smoothd

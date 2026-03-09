@@ -1,0 +1,8 @@
+      MODULE debpt
+
+      implicit none
+      save
+
+      INTEGER(I4B) :: iptdump
+
+      END MODULE debpt

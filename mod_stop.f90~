@@ -1,0 +1,8 @@
+      MODULE stop
+
+      implicit none
+      save
+
+      INTEGER(I4B) :: istop
+
+      END MODULE stop

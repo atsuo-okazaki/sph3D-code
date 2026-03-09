@@ -1,0 +1,634 @@
+      SUBROUTINE cartdis (idist, np, h1, thermal1, thermal2)
+!!      SUBROUTINE cartdis(igeom,idist,np,h1,thermal)
+!************************************************************
+!                                                           *
+!     This subroutine gives a few examples of the initial   *
+!     distribution of particles in cartesian coordinates.   *
+!                                                           *
+!     Edit this subroutine to fit into your problem!        *
+!                                                           *
+!************************************************************
+
+      use mpi_mod
+      use idims
+
+      use constants
+      use part
+      use rbnd
+      use diskbd
+      use debug
+      use logun
+      use maspres
+      use ptmass
+      use carac
+      use units
+      use cgas
+      use typef
+      use crpart
+      use sphcom
+      use maslos
+      use winds
+      use unidis
+
+      implicit none
+
+      INTEGER(I4B), intent(in) :: idist, np
+      INTEGER(I4B) :: i, icount, ipt, ireg, j, np1, np2, npresid, &
+               nshellx, nUDc, ind
+      REAL(DP), intent(in) :: h1, thermal1, thermal2
+      REAL(DP) :: rxmin(10), rxmax(10), rymin(10), rymax(10)
+      REAL(DP) :: rzmin(10), rzmax(10), dens(10)
+      REAL(DP) :: probav(idim)
+      REAL(DP) :: ran1, third, areafrac, azimuth0, &
+               cosavoid, cosphi, costheta, cosvang1, cosvang2, &
+               den1, denprof, height0, height1, hmeanini, &
+               hpower, hr0, phi1, prob1, prob2, prob3, &
+               probavn, r1, r2, rc2, rcyl2, rmax2, rmind2, rnd, rnd1, &
+               rnd2, rnd3, rnd4, rrad, rshellx, s1, s2, s3, sdpower, &
+               hsinva, sinphi, sintheta, svx, svy, svz, sx, sy, sz, &
+               tmp1, vangle0, vk0, vrotx, vwindx, &
+               vx1, vy1, vz1, x1, y1, z1, xmax5, ymax5, zmax5, &
+               r1_xy
+
+!-- For debug
+!!      INTEGER(I4B) :: nsd(10)
+!!      REAL(DP) :: rradx(10)
+      CHARACTER(len=1) :: iok!
+      CHARACTER(len=7) :: inject
+
+!---- Specify the method for particle injection
+      inject = 'random'
+!!      inject = 'uniform'
+!
+!--Allow for tracing flow
+!
+      third = 1./3.
+99004 FORMAT (A1)
+      IF (myrank.eq.0) then
+         IF (itrace.EQ.'all') WRITE (iprint, 99001)
+      ENDIF
+99001 FORMAT (' entry subroutine cartdis ')
+!
+!--Set Condensed Areas In Cartesian Coordinates
+!
+      IF (myrank.eq.0) WRITE (*,*) 'Cartdis: idist=',idist, &
+                                   ', ibound=',ibound
+      IF (myrank.eq.0) THEN
+         IF (idist == 5) THEN
+            WRITE (*,*) 'np=',np,', h1=',h1, &
+                        ', thermal1=',thermal1,', thermal2=',thermal2
+         ELSE
+            WRITE (*,*) 'np=',np,', h1=',h1, ', thermal=',thermal1
+         END IF
+      END IF
+
+      SELECT CASE (idist)
+      CASE (1)
+         npart = np + nptmass
+         IF (myrank.eq.0) WRITE ( *, 99002)
+99002    FORMAT (' NOT IMPLEMENTED')
+         CALL quit
+      CASE (2)
+         npart = np + nptmass
+         IF (myrank.eq.0) WRITE ( *, 99002)
+         CALL quit
+      CASE (5)
+         IF (ibound >= 94 .AND. ibound <= 97) THEN
+            npart = np + nptmass
+
+!----       ibelong is the tag that specifies which point-mass
+!           group the individual particles belong to.
+            DO i = 1, nptmass
+               ibelong (i) = i
+               iantigr (i) = 0
+            ENDDO
+
+!----       The following setting is valid only for nptmass=2.
+!           (A. Okazaki, 02/04/2007)
+!           Escape velocity and critical velocity of each star
+!!            vcrit1 = SQRT(pmass(1)/rptmas(1))
+!!            vesc1  = SQRT(2.0)*vcrit1
+!!            IF (nptmass /= 1) THEN
+!!               vcrit2 = SQRT(pmass(2)/rptmas(2))
+!!               vesc2  = SQRT(2.0)*vcrit2
+!!            ENDIF
+
+!----       Distribute particles around stars
+            prob1 = nshell1(1)/REAL(nshell1(1)+nshell1(2))
+            np1 = INT(np*prob1)
+            np2 = INT(np*(1.0-prob1))
+            npresid = np - np1 - np2
+            DO i=1,npresid
+               tmp1 = ran1(1)
+               IF (tmp1 <= prob1) THEN
+                  np1 = np1 + 1
+               ELSE
+                  np2 = np2 + 1
+               ENDIF
+            ENDDO
+            DO i=nptmass+1,npart
+               IF (i <= nptmass+np1) THEN
+                  ipt = 1
+                  nshellx = nshell1(1)
+                  rshellx = rshell1
+                  vwindx = vwind1
+!!                  vcritx = vcrit1
+!!                  vescx = vesc1
+                  vrotx = vrot1
+                  disfrac(i) = 1.0
+               ELSE
+                  ipt = 2
+                  nshellx = nshell1(2)
+                  rshellx = rshell2
+                  vwindx = vwind2
+!!                  vcritx = vcrit2
+!!                  vescx = vesc2
+                  vrotx = vrot2
+                  disfrac(i) = emdotratio &
+                               * REAL(nshell1(1))/REAL(nshell1(2))
+!!                  disfrac(i) = 1.0
+               ENDIF
+
+!----          Set the maximum theta if there is a disk, above which
+!              no wind particles should be injected (22 March 2010,
+!              A. Okazaki).
+!!               IF (ipt == isphcom .AND. &
+!!                  (ibound == 95 .OR. ibound == 97)) THEN
+               IF (ipt == isphcom) THEN
+!----             Note: height used is that for the isothermal disk
+                  vk0 = SQRT(pmass(isphcom)/rptmas(isphcom)) &
+                             *udist/utime
+                  IF (ibound == 95 .OR. ibound == 97) THEN
+                     IF (ipt == 1) THEN
+                        hr0 = SQRT(gamma*thermal1/(3.0/2.0/uergg))/vk0
+                     ELSE
+                        hr0 = SQRT(gamma*thermal2/(3.0/2.0/uergg))/vk0
+                     END IF
+!----                Avoid the innermost disk part confined to |z|<=2H
+                     cosavoid = 2. * hr0
+                  ELSE
+                     cosavoid = 0.0
+                  END IF
+               ELSE
+                  vk0 = SQRT(pmass(3-isphcom)/rptmas(3-isphcom)) &
+                             *udist/utime
+                  cosavoid = 0.0
+               ENDIF
+
+               IF (igeom == 8 .OR. igeom == 9) THEN
+                  vangle0 = ATAN2(z(2)-z(1), &
+                            SQRT((x(2)-x(1))**2+(y(2)-y(1))**2))
+                  cosvang1 = COS(0.5*pi-vangle0-vangle1(ipt))
+                  cosvang2 = COS(0.5*pi-vangle0-vangle2(ipt))
+               ENDIF
+
+               IF (inject == 'random') THEN
+                  DO
+                     IF (igeom == 8 .OR. igeom == 9) THEN
+                        costheta = ((cosvang1+cosvang2)*0.5 &
+                                   +(cosvang2-cosvang1)*(ran1(1)-0.5))
+                     ELSE
+                        costheta = 2.0*(ran1(1)-0.5)
+                     ENDIF
+                     IF (igeom == 9) THEn
+                        den1 = 1.0_DP
+                     ELSE
+!----                   The following random number genaration is 
+!                       for setting the particle injection rate 
+!                       proportional to 1-(rot param)*sin(theta)**2.
+!                       This is to take into account the effect of
+!                       gravity darkening due to rapid stellar totation.
+!                       (26 Oct. 2023)
+!!                        den1 = SQRT(1.0_DP - vrotx*(1.0_DP-costheta**2))
+                        den1 = 1.0_DP - vrotx*(1.0_DP-costheta**2)
+                     END IF
+                     rnd = ran1(1)
+                     IF (rnd <= den1 .AND. &
+                           ABS(costheta) >= cosavoid) EXIT
+                  END DO
+
+                  IF (igeom == 8 .OR. igeom == 9) THEN
+                     azimuth0 = ATAN2(y(2)-y(1),x(2)-x(1))
+                     phi1 = azimuth0+azimuth1(ipt) &
+                            +(azimuth2(ipt)-azimuth1(ipt))*ran1(1)
+                  ELSE
+                     phi1 = 2.0*pi*ran1(1)
+                  ENDIF
+
+                  r1 = 0.5*(rptmas(ipt)+rshellx)
+                  sintheta = SQRT(1.0-costheta*costheta)
+                  cosphi = COS(phi1)
+                  sinphi = SIN(phi1)
+                  x1 = r1*sintheta*cosphi
+                  y1 = r1*sintheta*sinphi
+                  z1 = r1*costheta
+
+                  !-- Each velocity component is first set in cm/s.
+                  !   Here, vwindx is in cm/s and
+                  !   vrotx is rotation parameter in the range 0-1.
+                  r1_xy = r1*sintheta
+                  IF (r1_xy < tiny) THEN
+                     vx1 = 0.0_DP
+                     vy1 = 0.0_DP
+                     vz1 = vwindx
+                  ELSE
+                     IF (igeom == 9) THEN
+                        vx1 = vwindx*x1/r1 - vrotx*vk0*sintheta*y1/r1_xy
+                        vy1 = vwindx*y1/r1 + vrotx*vk0*sintheta*x1/r1_xy
+                        vz1 = vwindx*z1/r1
+                     ELSE
+                        vx1 = vwindx*SQRT(1.0_DP-vrotx*sintheta*sintheta)*x1/r1 &
+                              - vrotx*vk0*sintheta*y1/r1_xy
+                        vy1 = vwindx*SQRT(1.0_DP-vrotx*sintheta*sintheta)*y1/r1 &
+                              + vrotx*vk0*sintheta*x1/r1_xy
+                        vz1 = vwindx*SQRT(1.0_DP-vrotx*sintheta*sintheta)*z1/r1
+                     END iF
+                  END iF
+               ELSE IF (inject == 'uniform') THEN
+                  r1 = 0.5*(rptmas(ipt)+rshellx)
+!X                  IF (myrank.eq.0) WRITE(*,*) ipt,i-nptmass
+                  nUDc = i-nptmass
+                  IF(nUDc > idiminj) nUDc = nUDc-idiminj
+                  ind = lUD(nUDc)
+!X                  IF (myrank.eq.0) THEN
+!X                     WRITE(*,*) i-nptmass,lUD(i-nptmass),ind
+!X                     WRITE(*,*) xUD(lUD(i-nptmass))
+!X                     WRITE(*,*) yUD(lUD(i-nptmass))
+!X                     WRITE(*,*) zUD(lUD(i-nptmass))
+!X                  ENDIF
+                  x1 = r1*xUD(ind)
+                  y1 = r1*yUD(ind)
+                  z1 = r1*zUD(ind)
+!X                  IF (myrank.eq.0) THEN
+!X                     WRITE(*,*) x1
+!X                     WRITE(*,*) y1
+!X                     WRITE(*,*) z1
+!X                  ENDIF
+
+                  !-- Each velocity component is first set in cm/s.
+                  !   Here, vwindx is in cm/s and
+                  !   vrotx is rotation parameter in the range 0-1.
+                  !   Note that currently, gravity darkening effect
+                  !   is available only for option 'random'.
+                  !   (22 Oct. 2023)
+                  r1_xy = SQRT(x1+x1+y1*y1)
+                  IF (r1_xy < tiny) THEN
+                     vx1 = 0.0_DP
+                     vy1 = 0.0_DP
+                     vz1 = vwindx
+                  ELSE
+                     sintheta = r1_xy/r1
+                     vx1 = vwindx*x1/r1 - vrotx*vk0*sintheta*y1/r1_xy
+                     vy1 = vwindx*y1/r1 + vrotx*vk0*sintheta*x1/r1_xy
+                     vz1 = vwindx*z1/r1
+                  END IF
+               ELSE
+                  IF (myrank.eq.0) THEN
+                     WRITE (*,*) '### inject=',inject, &
+                                 ' is undefined! ###'
+                  ENDIF
+                  CALL quit
+               ENDIF
+
+               vx1 = vx1 * utime/udist
+               vy1 = vy1 * utime/udist
+               vz1 = vz1 * utime/udist
+!!               IF (myrank.eq.0) THEN
+!!                  WRITE (iprint,*) i,': vx1=',vx1,', vy1=',vy1, &
+!!                               ', vz1=',vz1
+!!               ENDIF
+
+               x(i) = x1 + x(ipt)
+               y(i) = y1 + y(ipt)
+               z(i) = z1 + z(ipt)
+               vx(i) = vx1 + vx(ipt)
+               vy(i) = vy1 + vy(ipt)
+               vz(i) = vz1 + vz(ipt)
+
+               IF (igeom == 8 .OR. igeom == 9) THEN
+!----             areafac: corrected (20 April 2023)
+                  hsinva = 0.5d0*(SIN(vangle2(ipt))-SIN(vangle1(ipt)))
+                  areafrac = hsinva*(azimuth2(ipt)-azimuth1(ipt)) &
+                             /(2.0d0*pi)
+               ELSE
+                  areafrac = 1.0d0
+               ENDIF
+               h(i) = ((rshellx**3-rptmas(ipt)**3)*4.0d0*pi/3.0d0 &
+                      *areafrac/REAL(nshellx))**(1.0d0/3.0d0)
+
+!----          ibelong is the tag that specifies which point-mass
+!              group the individual particles belong to.
+               ibelong(i) = ipt
+               IF (igeom == 9) THEN
+                  iantigr(i) = 0
+               ELSE
+                  iantigr(i) = 1
+               END IF
+
+            ENDDO
+         ELSE IF (ibound == 99) THEN
+            npart = np + nptmass
+!!            IF (myrank.eq.0) WRITE (*,*) 'i:',nptmass+1,'->',npart
+
+!--         Inject particles whose distribution is statistcally
+!           equivalent with that of the captured particles
+!           in the corresponding BeX simulation within a sigma
+            IF (phase0 < 0.0) THEN
+               iphsi = NINT((phase0+1.0)/dphasei)+1
+            ELSE
+               iphsi = NINT(phase0/dphasei)+1
+            ENDIF
+            sx = SQRT(sxinfl(iphsi))
+            sy = SQRT(syinfl(iphsi))
+            sz = SQRT(szinfl(iphsi))
+!!            IF (myrank.eq.0) THEN
+!!               WRITE (*,*) 'iphsi=',iphsi
+!!               WRITE (*,*) 'xinfl=',xinfl(iphsi),', yinfl=', &
+!!                       yinfl(iphsi),', zinfl=',zinfl(iphsi)
+!!               WRITE (*,*) 'sx=',sx,', sy=',sy,', sz=',sz
+!!            ENDIF
+            svx = SQRT(svxinfl(iphsi))
+            svy = SQRT(svyinfl(iphsi))
+            svz = SQRT(svzinfl(iphsi))
+            xmax = -9.999e9
+            xmin = 9.999e9
+            ymax = -9.999e9
+            ymin = 9.999e9
+            zmax = -9.999e9
+            zmin = 9.999e9
+            rmax = -9.999e9
+            DO i=nptmass+1,npart
+               DO
+                  rnd1 = ran1(1)
+                  s1 = 2.*(rnd1 - 0.5)
+                  prob1 = EXP(-0.5*s1*s1)/SQRT(2.0*pi)
+
+                  rnd2 = ran1(1)
+                  s2 = 2.*(rnd2 - 0.5)
+                  prob2 = EXP(-0.5*s2*s2)/SQRT(2.0*pi)
+
+                  rnd3 = ran1(1)
+                  s3 = 2.*(rnd3 - 0.5)
+                  prob3 = EXP(-0.5*s3*s3)/SQRT(2.0*pi)
+
+                  rnd4 = ran1(1)
+                  IF (rnd4 <= prob1*prob2*prob3) EXIT
+               ENDDO
+
+               x(i) = xinfl(iphsi) + sx*s1 + x(isphcom)
+               y(i) = yinfl(iphsi) + sy*s2 + y(isphcom)
+               z(i) = zinfl(iphsi) + sz*s3 + z(isphcom)
+
+               DO
+                  rnd1 = ran1(1)
+                  s1 = 2.*(rnd1 - 0.5)
+                  prob1 = EXP(-0.5*s1*s1)/SQRT(2.0*pi)
+
+                  rnd2 = ran1(1)
+                  s2 = 2.*(rnd2 - 0.5)
+                  prob2 = EXP(-0.5*s2*s2)/SQRT(2.0*pi)
+
+                  rnd3 = ran1(1)
+                  s3 = 2.*(rnd3 - 0.5)
+                  prob3 = EXP(-0.5*s3*s3)/SQRT(2.0*pi)
+
+                  rnd4 = ran1(1)
+                  IF (rnd4 <= prob1*prob2*prob3) EXIT
+               ENDDO
+
+               vx(i) = vxinfl(iphsi) + svx*s1 + vx(isphcom)
+               vy(i) = vyinfl(iphsi) + svy*s2 + vy(isphcom)
+               vz(i) = vzinfl(iphsi) + svz*s3 + vz(isphcom)
+
+               IF (x(i) > xmax) xmax = x(i)
+               IF (x(i) < xmin) xmin = x(i)
+               IF (y(i) > ymax) ymax = y(i)
+               IF (y(i) < ymin) ymin = y(i)
+               IF (z(i) > zmax) zmax = z(i)
+               IF (z(i) < zmin) zmin = z(i)
+!!               IF (myrank.eq.0) WRITE (*,*) x(i),y(i),z(i)
+            ENDDO
+            rmax = SQRT((xmax/2)**2 + (ymax/2)**2 + &
+                     (zmax/2)**2)
+            rmax2 = rmax * rmax
+            rcyl = SQRT((xmax/2)**2 + (ymax/2)**2)
+            rcyl2 = rcyl * rcyl
+
+            hmeanini = ((xmax-xmin)*(ymax-ymin)*(zmax-zmin)/np) &
+                    **(1.0/3.0)
+            DO i=nptmass+1,npart
+               h(i) = hmeanini
+            ENDDO
+         ENDIF
+      CASE default
+         npart = np + nptmass
+         rcyl2 = rcyl * rcyl
+         rmind2 = rmind * rmind
+         rmax2 = rmax * rmax
+
+         IF (myrank.eq.0) THEN
+            WRITE (*,*) 'isphcom=',isphcom,' (nptmass=',nptmass, &
+                  ', npart=',npart,')'
+         ENDIF
+!----    If geometry is 'accretion disk'
+         IF (igeom == 4) THEN
+!-- Setup the disk parameters
+            IF (isphcom == 0) THEN
+               hpower = 0.0
+               height0 = zmax
+            ELSE
+               IF (myrank.eq.0) WRITE (*,99005)
+99005          FORMAT(' What disk-scale-height profile (~r^{p}) ?')
+               READ (*,*) hpower
+               IF (myrank.eq.0) WRITE (*,*) 'hpower=',hpower
+!-- Note: height used is that for the isothermal disk
+               vk0 = SQRT(pmass(isphcom)/rmind)*udist/utime
+               hr0 = SQRT(gamma*thermal1/(3.0/2.0/uergg))/vk0
+               IF (myrank.eq.0) WRITE (*,*) 'vk0=',vk0,', hr0=',hr0
+!-- Confine the disk to |z|<=2H
+               height0 = 2. * hr0 * rmind
+               height1 = height0 * (rcyl/rmind)**hpower
+               IF (height1 > zmax) THEN
+                  zmax = height1
+                  zmax5 = zmax * 0.5
+               ENDIF
+            ENDIF
+
+            IF (myrank.eq.0) WRITE (*,99006)
+99006       FORMAT(' What surface-density profile (~r^{q}) ?')
+            READ (*,*) sdpower
+            IF (myrank.eq.0) WRITE (*,*) 'sdpower=',sdpower
+
+            xmax5 = rcyl * 0.5
+            ymax5 = rcyl * 0.5
+            zmax5 = height1 * 0.5
+            probavn = 0.
+            IF (myrank.eq.0) WRITE (*,*) 'i:',nptmass+1,'->',npart
+            DO i = nptmass + 1, npart
+               DO
+                  x1 = 2.*(rcyl*ran1(1) - xmax5)
+                  y1 = 2.*(rcyl*ran1(1) - ymax5)
+                  z1 = 2.*(zmax*ran1(1) - zmax5)
+
+                  rc2 = x1*x1 + y1*y1
+                  r2 = rc2 + z1*z1
+!!                  IF (myrank.eq.0) WRITE (*,*) 'rc2=',rc2,', r2=',r2
+                  IF ((rc2 > rcyl2).OR.(rc2 < rmind2)) CYCLE
+
+                  rrad = SQRT(rc2)/rmind
+                  height1 = height0 * rrad**hpower
+                  IF (ABS(z1) > height1) CYCLE
+
+!!                  IF (myrank.eq.0) THEN
+!!                     WRITE (*,*) 'x1=',x1/rmind,', y1=',y1/rmind, &
+!!                              ', z1=',z1/rmind
+!!                  ENDIF
+                  den1 = rrad**(sdpower-hpower) &
+                         * exp(-0.5*(z1/(hr0*rmind*rrad**hpower))**2)
+                  rnd = ran1(1)
+                  IF (rnd <= den1) EXIT
+               ENDDO
+
+               probav(i) = den1
+!!               IF (myrank.eq.0) THEN
+!!                  WRITE (*,*) 'i=',i,': probav(i)=',probav(i), &
+!!                           '(height1=',height1,', z1=',z1, &
+!!                           ', rrad=',rrad,')'
+!!               ENDIF
+               probavn = probavn + probav(i)
+               x(i) = x1
+               y(i) = y1
+               z(i) = z1
+
+!-- For debug only
+!!               IF (i == nptmass+1) THEN
+!!                  ireg = 10
+!!                  dr = (rcyl/rmind-1.)/(ireg-1)
+!!                  DO j = 1, ireg
+!!                     rradx(j) = 1. + dr*(j-1)
+!!                     nsd(j) = 0
+!!                  ENDDO
+!!               ENDIF
+!!               DO j = 1, ireg-1
+!!                  IF ((rrad >= rradx(j)) &
+!!                  .AND. (rrad < rradx(j+1))) &
+!!                  THEN
+!!                     nsd(j) = nsd(j) + 1
+!!                     EXIT
+!!                  ENDIF
+!!               ENDDO
+            ENDDO
+
+         ELSE
+
+            xmax5 = xmax * 0.5
+            ymax5 = ymax * 0.5
+            zmax5 = zmax * 0.5
+
+            DO
+               IF (myrank.eq.0) WRITE (*, 88002)
+88002          FORMAT (' Enter number of different regions (max 10)')
+               READ (*,*) ireg
+               IF (ireg <= 10) EXIT
+            ENDDO
+
+
+            icount = 1
+            DO i = 1, ireg
+               DO
+                  IF (myrank.eq.0) WRITE (*, 88004) icount
+88004             FORMAT ('   Enter xmin of region ', I5)
+                  READ (*,*) rxmin(icount)
+                  IF (myrank.eq.0) WRITE (*, 88006) icount
+88006             FORMAT ('   Enter xmax of region ', I5)
+                  READ (*,*) rxmax(icount)
+                  IF (myrank.eq.0) WRITE (*, 88008) icount
+88008             FORMAT ('   Enter ymin of region ', I5)
+                  READ (*,*) rymin(icount)
+                  IF (myrank.eq.0) WRITE (*, 88010) icount
+88010             FORMAT ('   Enter ymax of region ', I5)
+                  READ (*,*) rymax(icount)
+                  IF (myrank.eq.0) WRITE (*, 88012) icount
+88012             FORMAT ('   Enter zmin of region ', I5)
+                  READ (*,*) rzmin(icount)
+                  IF (myrank.eq.0) WRITE (*, 88014) icount
+88014             FORMAT ('   Enter zmax of region ', I5)
+                  READ (*,*) rzmax(icount)
+
+                  DO
+                     IF (myrank.eq.0) WRITE (*, 88016) icount
+88016                FORMAT ('   Enter relative density of region ', &
+                         I5, ' (0.0 to 1.0)')
+                     READ (*,*) dens(icount)
+                     IF ((dens(icount) >= 0.) &
+                        .AND. (dens(icount) <= 1.)) EXIT
+                  ENDDO
+
+                  DO
+                     IF (myrank.eq.0) WRITE (*, 88018) icount
+88018                FORMAT (' Is region ', I2,' correct (y/n)? ')
+                     READ (*, 99004) iok
+                     IF ((iok == 'y') .OR. (iok == 'n')) EXIT
+                  ENDDO
+                  IF (iok == 'y') EXIT
+               ENDDO
+
+               icount = icount + 1
+            ENDDO
+
+            probavn = 0.
+
+       out: DO i = nptmass + 1, npart
+       in1:    DO
+                  x1 = 2.*(xmax*ran1(1) - xmax5)
+                  y1 = 2.*(ymax*ran1(1) - ymax5)
+                  z1 = 2.*(zmax*ran1(1) - zmax5)
+
+                  rc2 = x1*x1 + y1*y1
+                  r2 = rc2 + z1*z1
+                  SELECT CASE (igeom)
+                  CASE (2)
+                     IF (rc2 > rcyl2) CYCLE in1
+                  CASE (3)
+                     IF (r2 > rmax2) CYCLE in1
+                  CASE (4)
+                     IF ((rc2 > rcyl2) .OR. (rc2 < rmind2)) &
+                        CYCLE in1
+                  CASE default
+                  END SELECT
+
+                  rnd = ran1(1)
+     in2:         DO j = 1, ireg
+                     IF ((x1 >= rxmin(j)) .AND. (x1 <= rxmax(j)) .AND. &
+                         (y1 >= rymin(j)) .AND. (y1 <= rymax(j)) .AND. &
+                         (z1 >= rzmin(j)) .AND. (z1 <= rzmax(j))) THEN
+                        IF (rnd > dens(j)) CYCLE in1
+
+                        probav(i) = dens(j)
+                        probavn = probavn + probav(i)
+                        x(i) = x1
+                        y(i) = y1
+                        z(i) = z1
+                        EXIT in1
+                     ENDIF
+                  ENDDO in2
+               ENDDO in1
+            ENDDO out
+         ENDIF
+
+         probavn = probavn/DBLE(npart-nptmass)
+         IF (myrank.eq.0) WRITE (*,*) 'probavn = ',probavn
+         DO i = nptmass + 1, npart
+            denprof = (probavn / probav(i)) ** third
+            h(i) = h1 * denprof
+         ENDDO
+
+      END SELECT
+
+      IF (ibound < 94 .OR. ibound > 97) THEN
+         DO i=nptmass+1,npart
+            disfrac(i) = 1.0
+         END DO
+      ENDIF
+
+      END SUBROUTINE cartdis

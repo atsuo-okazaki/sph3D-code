@@ -1,0 +1,8 @@
+      MODULE flag
+
+      implicit none
+      save
+
+      INTEGER(I4B) :: notdone
+
+      END MODULE flag

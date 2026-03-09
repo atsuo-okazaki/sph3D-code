@@ -1,0 +1,25 @@
+      SUBROUTINE mainop
+!************************************************************
+!                                                           *
+!  This subroutine attributes first logical units and then  *
+!     determines the main task of current run               *
+!                                                           *
+!************************************************************
+
+      use logun
+      use actio
+      use zzhp
+
+      implicit none
+!
+!--Define logical units first
+!
+      CALL lunit
+!
+!--Get main option of job from command line argument
+!
+      CALL getcom(job, inname)
+
+      IF (job(1:9).NE.'evolution') iprint = 6
+
+      END SUBROUTINE mainop

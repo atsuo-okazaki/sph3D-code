@@ -1,0 +1,10 @@
+      MODULE rbnd
+
+      use idims
+      implicit none
+      save
+
+      REAL(kind=DBL) :: rmax, xmin, xmax, ymin, ymax, zmin, zmax, &
+                     rcyl, azimuth1, azimuth2, vangle1, vangle2
+
+      END MODULE rbnd

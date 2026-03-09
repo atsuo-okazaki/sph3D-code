@@ -1,0 +1,191 @@
+      SUBROUTINE radcool (ipart, deltat, uu)
+!************************************************************
+!                                                           *
+!  This subroutine computes the energy to be lost by        *
+!  optically thin, radiation. It uses Rich Townsend's       *
+!  Exact Integration method for radiative cooling           *
+!  (Townsend 2009, ApJS, 181, 391).                         *
+!  The cooling function Lambda(T) is taken from CLOUDY      *
+!  for optically thin plasmas with solar abundances.        *
+!                                                           *
+!************************************************************
+
+!!      use mpi_mod
+      use idims
+
+      use constants
+      use densi
+      use cgas
+      use logun
+      use units
+      use new
+      use cooldata
+      use phase
+      use ptmass
+      use typef
+
+      implicit none
+
+      INTEGER(I4B) :: ipart, k , kl, km, ku
+      REAL(DP) :: deltat, uu, gamma1, temp, dtemp, tfloor, &
+               amunit, habund, boltz, amue, amuh, temp1, tref, &
+               alambdaref, yfunx, alphak, yinv0, durad, &
+               thermal_min
+
+!      IF (iphase(ipart) .NE.0) THEN
+!         durad = 0.0
+!      ELSE
+
+!!         IF (uu.GT.0.0) THEN
+!!         ELSE
+!!            if (myrank.eq.0) WRITE (iprint,*) 'ipart=',ipart, &
+!!                 ', deltat=',deltat,', uu=',uu
+!!         ENDIF
+
+
+!----    temp: temperature of an SPH particle in Kelvin.
+!        tfloor: Floor temperature. We need this to prevent gas
+!             particles from cooling down too much.
+         gamma1 = gamma - 1.0
+         temp = gamma1*uu/Rg*gmw*uergg
+         !-- The followin definition dosn't work if one of thermal1, 
+         !   thermal2, and thermal3 is zero.       
+         thermal_min = thermal1
+         IF (ibound == 94 .OR. ibound == 96) THEN
+            thermal_min = MIN(thermal_min, thermal2)
+         END IF
+         IF (ibound == 95 .OR. ibound == 97) THEN
+            thermal_min = MIN(thermal_min, thermal2, thermal3)
+         END IF
+         tfloor = gamma1*thermal_min/Rg*gmw*uergg
+
+!        alambda: cooling function Lambda(T) in cgs units.
+!           alambda = alambdaref*(temp/tref)**alphak.
+
+!----    10 May 2010
+!        As a cooling function, a piecewise power-law
+!        form is adopted.
+
+         tref = tempcf(ntemp)
+         alambdaref = alambda(ntemp)
+
+         IF (temp.LT.tfloor) THEN
+            temp1 = tfloor
+         ELSE
+!           Note that the dimension of durad should be
+!           energy/(unit mass)/(unit time), not ergs/cm^3/sec.
+!           Hydrogen abundance (habund) of 0.7 is adopted for 
+!           solar abundances.
+            amunit = 1.66054e-24
+            boltz = 1.38065e-16
+            habund = 0.7
+            amue = 2.0 * amunit / (1.0 + habund)
+            amuh = amunit / habund
+
+!----       dtemp = Delta T_i * Lambda(T_ref)/T_ref
+!           where Delta T_i = (gamma-1)*rho_i*mu/(k_B*mu_e*mu_H)*Delta t.
+!           (See eq. (A22) of Taonsend 2009.)
+            dtemp = gamma1*DBLE(rho(ipart)*udens) &
+                    *DBLE(amunit*gmw/(amue*amuh*boltz)) &
+                    *DBLE(alambdaref/tref)*DBLE(deltat*utime)
+
+!----       Locate the interval in which temp is found.
+!           This part is taken from locate.f
+!           in Numerical Recipes in Fortran, 2nd ed..
+
+            kl = 0
+            ku = ntemp + 1
+   10       IF (ku - kl.GT.1) THEN
+               km = (ku + kl) / 2
+               IF ((tempcf(ntemp).GE.tempcf (1)) .EQV. ( &
+               temp.GE.tempcf(km))) THEN
+                  kl = km
+               ELSE
+                  ku = km
+               ENDIF
+               GOTO 10
+            ENDIF
+            IF (temp.EQ.tempcf(1) ) THEN
+               k = 1
+            ELSEIF (temp.EQ.tempcf(ntemp) ) THEN
+               k = ntemp - 1
+            ELSE
+               k = kl
+            ENDIF
+
+!!            IF (myrank.eq.) WRITE (iprint,*) 'ipart=',ipart, &
+!!                 ': u=',uu,', temp=',temp,' (tfloor=',tfloor,')'
+!!            IF (myrank.eq.) WRITE (iprint,*) 'ipart=',ipart, &
+!!                 ': tempcf(k)=',tempcf(k),',alambda(k)=', &
+!!                 alambda(k),', alphacf(k)=',alphacf(k), &
+!!               ' --> alambda=',alambda(k)*(temp/tempcf(k))**alphak
+
+!----       yfunx = Y(T_i^n) of Townsend (2009) [eq.(A5)]
+            alphak = alphacf(k)
+            IF (alphak.EQ.1.0) THEN
+               yfunx = yfunc(k)+alambda(ntemp)*tempcf(k) &
+                       /(alambda(k)*tempcf(ntemp))*LOG(tempcf(k)/temp)
+            ELSE
+               yfunx = yfunc(k)+alambda(ntemp)*tempcf(k) &
+                       /(alambda(k)*tempcf(ntemp)*(1-alphak)) &
+                       *(1-(tempcf(k)/temp)**(alphak-1))
+            ENDIF
+
+!----       The dollowing equation is obtained from eq.(25) of Townsend (2009).
+            yfunx = yfunx + dtemp
+
+!Coolv1_Fixed by Chris Russel (9  July 2024)
+!----       Locate the interval in which temp is found.
+!           This part is taken from locate.f in Numerical Recipes.
+!
+            kl=0
+            ku=ntemp+1
+   11       IF (ku-kl.GT.1) THEN
+                      km=(ku+kl)/2
+               IF ((yfunc(ntemp).GE.yfunc(1)).EQV.(yfunx.GE.yfunc(km))) &
+               THEN
+                  kl=km
+               ELSE
+                  ku=km
+               ENDIF
+               GOTO 11
+            ENDIF
+            IF (yfunx.EQ.yfunc(1)) THEN
+               k=1
+            ELSE IF (yfunx.EQ.yfunc(ntemp)) THEN
+               k=ntemp-1
+            ELSE
+               k=kl
+            ENDIF
+            alphak  = alphacf(k)
+!Coolv1_Fixed
+
+!----       Eq.(A7) of Townsend (2009)
+            IF (alphak.EQ.1.0) THEN
+               temp1 = MAX(tempcf(k)*EXP(-alambda(k)*tempcf(ntemp) &
+                           /(alambda(ntemp)*tempcf(k))*(yfunx-yfunc(k))), &
+                           tfloor)
+            ELSE
+               yinv0 = 1-(1-alphak)*alambda(k)*tempcf(ntemp) &
+                       /(alambda(ntemp)*tempcf(k))*(yfunx-yfunc(k))
+               IF (yinv0.GT.0.0) THEN
+                  temp1 = MAX(tempcf(k)*yinv0**(1/(1-alphak)),tfloor)
+               ELSE
+                  temp1 = tfloor
+               ENDIF
+            ENDIF
+         ENDIF
+
+         durad = (temp1-temp)*Rg/(gamma1*gmw*uergg)
+!      ENDIF
+
+      uu = uu + durad
+
+!---- Store data to trace radiative cooling efficiency.
+      tempini(ipart) = temp
+      tempfin(ipart) = temp1
+      tcool(ipart) = amue*amuh*boltz &
+                     /DBLE(gamma1*rho(ipart)*udens*amunit*gmw) &
+                     *temp/DBLE(alambda(k)*(temp/tempcf(k))**alphak)
+
+      END SUBROUTINE radcool

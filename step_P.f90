@@ -1,0 +1,1707 @@
+       SUBROUTINE step (dt)
+!************************************************************
+!                                                           *
+!  This subroutine integrate the system of differential     *
+!     equations for one timestep using                      *
+!     a second-order Runge-Kutta-Fehlberg method.           *
+!                                                           *
+!************************************************************
+
+      use mpi_mod
+      use idims
+
+      use constants
+      use part
+      use dum
+      use force, only: f1vx, f1vy, f1vz, f1u, f1h, &
+                 f2vx, f2vy, f2vz, f2u, f2h
+      use integ
+      use typef
+      use densi
+      use carac
+      use timei
+      use gtime
+      use ener
+      use cgas
+      use ghost
+      use init
+      use divve
+      use eosq
+      use useles
+      use current
+      use outneigh
+      use numpa
+      use gravi
+      use logun
+      use debug
+      use curlist
+      use phase
+      use ptmass
+      use nextmpt
+      use ptdump
+      use active
+      use debugpt
+      use debpt
+      use polyk2
+      use rotat
+      use binary
+      use glrho
+      use artvb
+      use vbound
+      use ian
+      use isnpt
+      use table
+      use kerne
+      use accurpt
+      use tlist
+      use hagain
+      use crpart
+      use bodys
+      use torq
+      use visc
+      use pres
+      use ptbin
+      use out
+      use rbnd
+      use call
+      use neighbor
+      use sync
+      use sphcom
+      use maslos
+      use winds
+      use tming
+      use split
+
+      implicit none
+
+      INTEGER(I4B) :: ikilled, itnext, ncrit, ilocal, ibin, idtini, &
+             i, j, k, irktlnum, jj, ntot, itime, itime0, itime1, &
+             imakeghost, imaxdens, iii, idonebound, nlst1, idtsyn, &
+             istminold, iptnum, istep2, irat, iptcur, iipt, isave, &
+             injfrq, nlsts1, nlsts2, nlsts3, ilenlistsave, &
+             nneightotsave, internumsave, iresume, ii, j1, nnew, &
+             neighmean, iokay, ivalue, ichkloop, numneigh, &
+             ipt1, ipt2, ipart
+      REAL(DP) :: gravx1(idim), gravy1(idim)
+      REAL(DP) :: gradpx1(idim), gradpy1(idim)
+      REAL(DP) :: artvix1(idim), artviy1(idim)
+      REAL(DP), parameter :: small=1.0E-04, rhosmall=1.0E-05
+      REAL(DP) :: dt, xlog2, f21, f22, deltat, dtfull, &
+             dtf21, dtf22, xold, yold, zold, delvx, delvy, delvz, &
+             vxstore, vystore, vzstore, pmasspt, &
+             dx, dy, dz, delgx, delgy, delgz, &
+             delpx, delpy, delpz, delax, delay, delaz, dtf22dtfull, &
+             extraxt, extrayt, extraxg, extrayg, extraxp, extrayp, &
+             extraxv, extrayv, time, pmassi, r2, tolpart, errx, &
+             erry, errz, errvx, errvy, errvz, erru, errh, errm, &
+             errdivtol, rap, rmod1, divvi, aux1, aux2, aux3, denom, &
+             crstepi, rmodcr, force21, force22, force2, &
+             rmodcr2, rmod, stepi, factor, dytime, rx, ry, rz, &
+             tcomp, r, vr, vth, vv, realtime, xp, yp, vxp, vyp, &
+             anomtrue, rp, energyp, angmomp, &
+             semiaxis, eccent, anomecc, anommean, hhigh, hlow, &
+             qratio, qratio1, totmass, dvx, dvy, dvz, dr
+      LOGICAL :: ifirst=.true.
+      LOGICAL :: icenter=.false.
+      CHARACTER(len=7) :: where='step'
+      CHARACTER(len=5) :: ptdebug
+      CHARACTER(len=2) :: itemchar
+!
+!--Allow for tracing flow
+!
+      if(myrank.eq.0)then
+      IF (itrace.EQ.'all') WRITE(iprint,250)
+      endif
+  250 FORMAT(' entry subroutine step')
+!
+!--Compute next dump time and initialise variables
+!
+      ikilled = 0
+      itnext = imaxstep
+      iteighth = itnext/8
+      iptout = imaxstep/iptoutnum
+      xlog2 = 0.30103
+      ncrit = INT(nactive/10.0)
+      ilocal = 0
+!
+!--Define coefficients for Runge-Kutta integrator
+!
+      f21 = 1./256.
+      f22 = 255./256.
+      e1 = 1./512.
+!
+!--Integration
+!
+!---------- FIRST TIME AROUND ----------
+!
+      IF (ifirst) THEN
+         ifirst = .FALSE.
+
+         IF (gt.EQ.0.0) THEN
+            ibin = INT(LOG10(dt/dtini)/xlog2) + 1
+            IF (ibin.LT.0) THEN
+               if(myrank.eq.0) &
+               WRITE(iprint,*) 'Error with initial timesteps'
+               CALL quit
+            ENDIF
+            idtini = imaxstep/2**ibin
+            istepmin = idtini
+            istepmax = idtini
+         ELSE
+            istepmin = imax
+            istepmax = -1
+            DO i = 1, npart
+               IF (iphase(i).NE.-1) THEN
+                  istepmin = MIN(istepmin, isteps(i))
+                  istepmax = MAX(istepmax, isteps(i))
+               ENDIF
+            END DO
+         ENDIF
+
+         nlst = 0
+         DO i = 1, npart
+            IF (iphase(i).NE.-1) THEN
+               it0(i) = 0
+!!!               isteps(i) = idtini
+               IF (gt.EQ.0.0) isteps(i) = idtini
+               it1(i) = isteps(i)/2
+               dumx(i) = x(i)
+               dumy(i) = y(i)
+               dumz(i) = z(i)
+               dumvx(i) = vx(i)
+               dumvy(i) = vy(i)
+               dumvz(i) = vz(i)
+               dumu(i) = u(i)
+               dumh(i) = h(i)
+               nlst = nlst + 1
+               llist(nlst) = i
+               iscurrent(i) = 1
+               IF (igrape.EQ.1) hmax(i) = h(i)
+            ENDIF
+!
+            irktlnum = 0
+         END DO
+         jj = nlst
+!
+!--Create ghost particles
+!
+         nghost = 0
+         IF (ibound.EQ.1) CALL ghostp1(npart,x,y,z,vx,vy,vz,u,h)
+         IF (ibound.EQ.2) CALL ghostp2(npart,x,y,z,vx,vy,vz,u,h)
+!!         IF (ibound.EQ.3 .OR. ibound.EQ.8 .OR. ibound.GE.90)
+         IF (ibound.EQ.3 .OR. ibound.EQ.8 .OR. ibound.EQ.96 &
+         .OR. ibound.EQ.97) CALL ghostp3(npart,x,y,z,vx,vy,vz,u,h)
+         ntot = npart + nghost
+
+         DO i = npart + 1, ntot
+            dumx(i) = x(i)
+            dumy(i) = y(i)
+            dumz(i) = z(i)
+            dumvx(i) = vx(i)
+            dumvy(i) = vy(i)
+            dumvz(i) = vz(i)
+            dumu(i) = u(i)
+            dumh(i) = h(i)
+         END DO
+         itime = 0
+!
+!--Make the tree
+!
+         IF (igrape.EQ.0 .AND. (nactive.NE.nptmass .OR.iptintree)) THEN
+!!            WRITE (iprint,*) '1: dumx(1)=',dumx(1),', dumy(1)=',dumy(1), &
+!!                 ', dumz(1)=',dumz(1)
+            CALL insulate(1,ntot,npart,dumx,dumy,dumz,pmass,dumh)
+         ENDIF
+!
+!--Compute forces on all particles
+!
+         icall = 1
+
+         CALL derivi (dt,itime,dumx,dumy,dumz,dumvx, &
+              dumvy,dumvz,dumu,dumh,f1vx,f1vy,f1vz,f1u,f1h,npart, &
+              ntot,ireal)
+!
+!--BEGIN: For calculating instantaneous torques about density maximum
+!
+!         rhomaxtorq = 0.
+!         DO i = 1, npart
+!            IF (rho(i).GT.rhomaxtorq) THEN
+!               rhomaxtorq = rho(i)
+!               itorqmax = i
+!            ENDIF
+!         END DO
+!         DO i = 1, npart
+!            dx = x(i) - x(itorqmax)
+!            dy = y(i) - y(itorqmax)
+!            torqt(i)=(dx*f1vy(i) - dy*f1vx(i))
+!            torqg(i)=(dx*gravy(i) - dy*gravx(i))
+!            torqp(i)= - (dx*gradpy(i) -
+!     &           dy*gradpx(i))*cnormk
+!            torqv(i)= - (dx*artviy(i) -
+!     &           dy*artvix(i))*cnormk
+!         END DO
+!         CALL wdump(idisk1)
+!         STOP
+!
+!--END: For calculating instantaneous torques about density maximum
+!
+         rhomaxsync = 0.
+         DO i = 1, npart
+            iscurrent(i) = 0
+            rhomaxsync = MAX(rhomaxsync, rho(i))
+
+            gravx1(i) = gravx(i)
+            gravy1(i) = gravy(i)
+            gradpx1(i) = gradpx(i)
+            gradpy1(i) = gradpy(i)
+            artvix1(i) = artvix(i)
+            artviy1(i) = artviy(i)
+         END DO
+      ELSE
+         ntot = npart + nghost
+      END IF
+!
+!---------- END FIRST TIME AROUND ----------
+!
+!--Find minimum time for force calculation
+!
+ 100  itime1 = imax
+      itime0 = imax
+      DO j = 1, npart
+         IF (iphase(j).GE.0) THEN
+            itime1 = MIN(itime1, it1(j))
+            itime0 = MIN(itime0, it0(j) + isteps(j))
+         ENDIF
+      END DO
+
+      ioutinf = 0
+      ioutsup = 0
+      ioutmin = 0
+      ioutmax = 0
+      inmax = -1
+      inmin = 10000
+!
+!--Check if predictions at half time step are needed
+!
+      IF (itime1.GE.itime0) THEN
+         itime = itime0
+         GOTO 101
+      ELSE
+         itime = itime1
+      ENDIF
+!
+!--Allow for tracing flow
+!
+      if(myrank.eq.0)then
+      IF(itrace.EQ.'all') WRITE(iprint,251) dt*itime/imaxstep+gt, itime
+      endif
+ 251  FORMAT(' step is doing time ',1F12.5, I10)
+!
+!---------- PREDICTIONS AT HALF TIME STEP ----------
+!
+!--Identify particles with matching times and make a list
+!
+      jj = 0
+      DO i = 1, npart
+         IF (it1(i).EQ.itime .AND. iphase(i).GE.0) THEN
+            jj = jj + 1
+            llist(jj) = i
+            iscurrent(i) = 1
+         END IF
+      END DO
+      nlst = jj
+      nlst0 = 0
+!
+!--Predict variables at t=time
+!
+!$OMP PARALLEL default(none) &
+!$OMP shared(npart,nghost,dt,itime,it0,imaxstep,ireal) &
+!$OMP shared(x,y,z,vx,vy,vz,u,h,f1vx,f1vy,f1vz,f1u,f1h) &
+!$OMP shared(dumx,dumy,dumz,dumvx,dumvy,dumvz,dumu,dumh,iphase) &
+!$OMP private(j,k,deltat)
+!$OMP DO SCHEDULE(runtime)
+      DO j = 1, npart
+         IF (iphase(j).GE.0) THEN
+            deltat = dt*(itime - it0(j))/imaxstep
+            dumx(j) = x(j) + deltat*vx(j)
+            dumy(j) = y(j) + deltat*vy(j)
+            dumz(j) = z(j) + deltat*vz(j)
+            dumvx(j) = vx(j) + deltat*f1vx(j)
+            dumvy(j) = vy(j) + deltat*f1vy(j)
+            dumvz(j) = vz(j) + deltat*f1vz(j)
+            dumu(j) = u(j) + deltat*f1u(j)
+            dumh(j) = h(j) + deltat*f1h(j)
+         ENDIF
+      END DO
+!$OMP END DO
+
+!$OMP DO SCHEDULE(runtime)
+      DO j = npart + 1, npart + nghost
+         IF (iphase(j).GE.0) THEN
+            k = ireal(j)
+            deltat = dt*(itime - it0(k))/imaxstep
+            dumx(j) = x(j) + deltat*vx(j)
+            dumy(j) = y(j) + deltat*vy(j)
+            dumz(j) = z(j) + deltat*vz(j)
+            dumvx(j) = vx(j)
+            dumvy(j) = vy(j)
+            dumvz(j) = vz(j)
+            dumu(j) = u(j) + deltat*f1u(k)
+            dumh(j) = h(j) + deltat*f1h(k)
+         ENDIF
+      END DO
+!$OMP END DO
+!$OMP END PARALLEL
+
+      IF (hmaximum.GT.0.0) THEN
+!$OMP PARALLEL DO SCHEDULE(runtime) default(none) &
+!$OMP shared(npart,nghost,hmaximum,dumh) &
+!$OMP private(j)
+         DO j = 1, npart + nghost
+            IF (dumh(j).GT.hmaximum) dumh(j) = hmaximum
+         END DO
+!$OMP END PARALLEL DO
+      ENDIF
+!
+!--Make the tree or update the tree
+!
+!!!       IF (nactive.NE.nptmass) THEN
+      IF (igrape.EQ.0 .AND. (nlst.GT.nptmass .OR. iptintree)) THEN
+         IF (nlst.GE.ncrit .OR. iaccr.EQ.1 .OR. ikilled.EQ.1) THEN
+            iaccr = 0
+            ikilled = 0
+!!            WRITE (iprint,*) '2: dumx(1)=',dumx(1),', dumy(1)=',dumy(1), &
+!!                 ', dumz(1)=',dumz(1)
+            CALL insulate(1,ntot,npart,dumx,dumy,dumz,pmass,dumh)
+         ELSEIF (iptintree .OR. nlst.GT.nptmass) THEN
+            CALL insulate(2,ntot,npart,dumx,dumy,dumz,pmass,dumh)
+         ENDIF
+      ENDIF
+!
+!--Compute forces on list particles
+!
+      icall = 2
+      CALL derivi (dt,itime,dumx,dumy,dumz,dumvx, &
+           dumvy,dumvz,dumu,dumh,f2vx,f2vy,f2vz,f2u,f2h,npart, &
+           ntot,ireal)
+!
+!--Save velocities at half time step
+!
+!$OMP PARALLEL DO SCHEDULE(runtime) default(none) &
+!$OMP shared(nlst,llist,iscurrent,dumvx,dumvy,dumvz) &
+!$OMP shared(dum2vx,dum2vy,dum2vz,it1,imax) &
+!$OMP private(i,j)
+!POPTION INDEP
+      DO j = 1, nlst
+         i = llist(j)
+         iscurrent(i) = 0
+         dum2vx(i) = dumvx(i)
+         dum2vy(i) = dumvy(i)
+         dum2vz(i) = dumvz(i)
+         it1(i) = imax
+      END DO
+!$OMP END PARALLEL DO
+
+      GOTO 100
+!
+!---------- ADVANCING PARTICLES ----------
+!
+!--Identify particles to be advanced
+!
+ 101  jj = 0
+      imakeghost = 0
+
+!
+!
+!--BEGIN: Find maximum density for calculating torques
+      imaxdens = 0
+!      densmax = 0.
+!      DO i = 1, npart
+!         IF (iphase(i).GE.0 .AND. rho(i).GT.densmax) THEN
+!            densmax = rho(i)
+!            imaxdens = i
+!         ENDIF
+!      END DO
+!--END:  Find maximum density for calculating torques
+!
+!
+      DO i = 1, npart
+         IF (it0(i)+isteps(i).EQ.itime .AND. iphase(i).GE.0) THEN
+            jj = jj + 1
+            llist(jj) = i
+            IF (hasghost(i).EQ.1) imakeghost = 1
+         ENDIF
+      END DO
+      nlst0 = jj
+
+!$OMP PARALLEL DO SCHEDULE(runtime) default(none) &
+!$OMP shared(nlst0,llist,iscurrent,dt,isteps,imaxstep,f21,f22) &
+!$OMP shared(x,y,z,vx,vy,vz,u,h,dum2vx,dum2vy,dum2vz) &
+!$OMP shared(f1vx,f1vy,f1vz,f1u,f1h,f2vx,f2vy,f2vz,f2u,f2h) &
+!$OMP shared(gravx,gravy,gradpx,gradpy,artvix,artviy,gravx1,gravy1) &
+!$OMP shared(gradpx1,gradpy1,artvix1,artviy1,torqt,torqg,torqp) &
+!$OMP shared(torqv,torqc,it0,itime,imaxdens,cnormk) &
+!$OMP shared(nneigh,hmaximum,iphase,nptmass,listpm) &
+!$OMP shared(xmomsyn,ymomsyn,zmomsyn,pmass) &
+!$OMP shared(encal) &
+!$OMP private(i,j,dtfull,dtf21,dtf22,xold,yold,delvx,delvy,delvz) &
+!$OMP private(vxstore,vystore,dx,dy,delgx,delgy,delpx,delpy) &
+!$OMP private(delax,delay,extraxt,extrayt,extraxg,extrayg) &
+!$OMP private(extraxp,extrayp,extraxv,extrayv,dtf22dtfull) &
+!$OMP private(iii,pmasspt) &
+!$OMP reduction(+:ioutmax) &
+!$OMP shared(myrank)
+!POPTION PARALLEL
+!POPTION PSUM(ioutmax)
+      DO j = 1, nlst0
+         i = llist(j)
+         IF (it0(i)+isteps(i).EQ.itime .AND. iphase(i).GE.0) THEN
+            iscurrent(i) = 1
+!
+!--Update positions
+!
+            dtfull = dt*isteps(i)/imaxstep
+            dtf21 = dtfull*f21
+            dtf22 = dtfull*f22
+
+            xold = x(i)
+            yold = y(i)
+
+            x(i) = x(i) + dtf21*vx(i) + dtf22*dum2vx(i)
+            y(i) = y(i) + dtf21*vy(i) + dtf22*dum2vy(i)
+            z(i) = z(i) + dtf21*vz(i) + dtf22*dum2vz(i)
+!
+!--Keep old velocities for error calculation
+!
+            dum2vx(i) = vx(i)
+            dum2vy(i) = vy(i)
+            dum2vz(i) = vz(i)
+!
+!--Update velocities
+!
+            delvx = dtf21*f1vx(i) + dtf22*f2vx(i)
+            delvy = dtf21*f1vy(i) + dtf22*f2vy(i)
+            delvz = dtf21*f1vz(i) + dtf22*f2vz(i)
+
+            vxstore = vx(i)
+            vystore = vy(i)
+
+            vx(i) = vx(i) + delvx
+            vy(i) = vy(i) + delvy
+            vz(i) = vz(i) + delvz
+            IF (iphase(i).GE.1) THEN
+               DO iii = 1, nptmass
+                  IF (listpm(iii).EQ.i) GOTO 444
+               END DO
+ 444           CONTINUE
+               pmasspt = pmass(i)
+               xmomsyn(iii) = xmomsyn(iii) + delvx*pmasspt
+               ymomsyn(iii) = ymomsyn(iii) + delvy*pmasspt
+               zmomsyn(iii) = zmomsyn(iii) + delvz*pmasspt
+            ENDIF
+!
+!--Save torques - derived by making the torques exactly equal to the change in
+!    angular momentum of the particle over the timestep.  The total torque
+!    is also evaluated by a second method below as a check.
+!
+            IF (imaxdens.EQ.0) THEN
+               dx = x(i)
+               dy = y(i)
+            ELSE
+               dx = x(i) - x(imaxdens)
+               dy = y(i) - y(imaxdens)
+               xold = xold - x(imaxdens)
+               yold = yold - y(imaxdens)
+            ENDIF
+
+            delgx = dtf21*gravx1(i) + dtf22*gravx(i)
+            delgy = dtf21*gravy1(i) + dtf22*gravy(i)
+            delpx = dtf21*gradpx1(i) + dtf22*gradpx(i)
+            delpy = dtf21*gradpy1(i) + dtf22*gradpy(i)
+            delax = dtf21*artvix1(i) + dtf22*artvix(i)
+            delay = dtf21*artviy1(i) + dtf22*artviy(i)
+
+            dtf22dtfull = dtf22*dtfull/2.0
+
+            extraxt = dtf22dtfull*f1vx(i)
+            extrayt = dtf22dtfull*f1vy(i)
+            extraxg = dtf22dtfull*gravx1(i)
+            extrayg = dtf22dtfull*gravy1(i)
+            extraxp = dtf22dtfull*gradpx1(i)
+            extrayp = dtf22dtfull*gradpy1(i)
+            extraxv = dtf22dtfull*artvix1(i)
+            extrayv = dtf22dtfull*artviy1(i)
+
+            torqt(i)=torqt(i) + (dx*delvy - dy*delvx) &
+                 + (extraxt*vystore - extrayt*vxstore)
+            torqg(i)=torqg(i) + (dx*delgy - dy*delgx) &
+                 + (extraxg*vystore - extrayg*vxstore)
+            torqp(i)=torqp(i) - (dx*delpy - dy*delpx)*cnormk &
+                 - (extraxp*vystore - extrayp*vxstore)*cnormk
+            torqv(i)=torqv(i) - (dx*delay - dy*delax)*cnormk &
+                 - (extraxv*vystore - extrayv*vxstore)*cnormk
+!
+!--Check torques by using a less exact method - this method is the same
+!    as above, but is derived using T = 1/256*T_1 + 255/256*T_2
+!    (i.e. the same as for the intergration).  The above method
+!    makes the torques *exactly* equal to the change in specific angular
+!    momentum.  The two methods are identical in the limit that f1 and f2
+!    are equal.  Hence this provides a check that the timestep is small
+!    enough to give a good integration.
+!
+            torqc(i)=torqc(i) + dtf21*(xold*f1vy(i) - yold*f1vx(i)) &
+                 + dtf22*(xold*f2vy(i) - yold*f2vx(i)) &
+                 + (vxstore*dtf22dtfull*f2vy(i) - &
+                 vystore*dtf22dtfull*f2vx(i))
+!
+!--Update u(i) and h(i)
+!
+            u(i) = u(i) + dtf21*f1u(i) + dtf22*f2u(i)
+            h(i) = h(i) + dtf21*f1h(i) + dtf22*f2h(i)
+            if(myrank.eq.0)then
+            IF (h(i).LT.0) WRITE(iprint,*) 'error in h ', &
+                 h(i), f1h(i), dtf21, f2h(i), dtf22, nneigh(i)
+            endif
+            IF (hmaximum.GT.0.0) THEN
+               IF (h(i).GT.hmaximum) THEN
+                  h(i) = hmaximum
+                  ioutmax = ioutmax + 1
+               END IF
+            END IF
+
+!----    Since 26 July 2013, radcool is called below. Previously,
+!        for some period, it was called in forcei_P.f90 inside
+!        the Runge-Kutta-Fehlberg integration part.
+!----    Correction of u(i) due to optically thin,
+!        radiative cooling. This uses Townsend (2009)'s
+!        Exact Integration scheme.
+!        (Note that this scheme can't be used in energ.f,
+!        because the EI scheme does not fit in an explicit method.
+!        (A. Okazaki, 05/05/2010, 26/07/2013)
+!
+         IF (encal.EQ.'c' .AND. iphase(i).EQ.0) THEN
+            CALL radcool(i,dtfull,u(i))
+         END IF
+!
+!--Synchronize the advanced particle times with current time
+!
+            it0(i) = itime
+         END IF
+      END DO
+
+!$OMP END PARALLEL DO
+
+!-- Move ghost particles at every time step (20 Oct 2000)
+
+!$OMP PARALLEL default(none) &
+!$OMP shared(npart,nghost,dt,itime,it0,imaxstep) &
+!$OMP shared(x,y,z,vx,vy,vz,u,h,dumx,dumy,dumz,dumvx,dumvy,dumvz) &
+!$OMP shared(dumu,dumh,f1u,f1h,ireal,iphase) &
+!$OMP private(j,deltat,k)
+!$OMP DO SCHEDULE(runtime)
+      DO j = npart + 1, npart + nghost
+!!         deltat = dt*isteps(isphcom)/imaxstep
+
+!!         x(j) = x(j) + deltat*vx(isphcom)
+!!         y(j) = y(j) + deltat*vy(isphcom)
+!!         z(j) = z(j) + deltat*vz(isphcom)
+!!         vx(j) = vx(isphcom)
+!!         vy(j) = vy(isphcom)
+!!         vz(j) = vz(isphcom)
+
+         IF (iphase(j).GE.0) THEN
+            k = ireal(j)
+            deltat = dt*(itime - it0(k))/imaxstep
+
+            x(j) = x(j) + deltat*vx(j)
+            y(j) = y(j) + deltat*vy(j)
+            z(j) = z(j) + deltat*vz(j)
+
+            dumx(j) = x(j) + deltat*vx(j)
+            dumy(j) = y(j) + deltat*vy(j)
+            dumz(j) = z(j) + deltat*vz(j)
+            dumvx(j) = vx(j)
+            dumvy(j) = vy(j)
+            dumvz(j) = vz(j)
+            dumu(j) = u(j) + deltat*f1u(k)
+            dumh(j) = h(j) + deltat*f1h(k)
+         ENDIF
+      END DO
+!$OMP END DO
+!$OMP END PARALLEL
+
+!
+!--Total number of advanced particles
+!
+      idonebound = 0
+      IF (ibound.GT.0 .AND. ibound.LT.7) CALL boundry(npart, &
+           llist, nlst0, x, y, z, vx, vy, vz, u, h, idonebound)
+!
+!--Create ghost particles
+!
+      IF ((nlst0.GT.ncrit .AND. imakeghost.EQ.1) &
+                                          .OR. idonebound.EQ.1) THEN
+!      IF (imakeghost.EQ.1 .OR. idonebound.EQ.1) THEN
+         nghost = 0
+         IF (ibound.EQ.1) CALL ghostp1(npart,x,y,z,vx,vy,vz,u,h)
+         IF (ibound.EQ.2) CALL ghostp2(npart,x,y,z,vx,vy,vz,u,h)
+!!         IF (ibound.EQ.3 .OR. ibound.EQ.8 .OR. ibound.GE.90)
+         IF (ibound.EQ.3 .OR. ibound.EQ.8.OR. ibound.EQ.96 &
+         .OR. ibound.EQ.97) CALL ghostp3(npart,x,y,z,vx,vy,vz,u,h)
+         ntot = npart + nghost
+      ENDIF
+!
+!--Identify particles to predict
+!
+      DO j = 1, npart
+         IF (iphase(j).GE.0) THEN
+            IF (it1(j).EQ.itime) THEN
+               jj = jj + 1
+               llist(jj) = j
+               iscurrent(j) = 1
+            ENDIF
+         ENDIF
+      END DO
+!
+!--Predict variables at t=time
+!
+!$OMP PARALLEL default(none) &
+!$OMP shared(npart,nghost,dt,itime,it0,imaxstep) &
+!$OMP shared(x,y,z,vx,vy,vz,u,h,dumx,dumy,dumz,dumvx,dumvy,dumvz) &
+!$OMP shared(dumu,dumh,f1vx,f1vy,f1vz,f1u,f1h,ireal,iphase) &
+!$OMP shared(isteps,isphcom) &
+!$OMP private(j,deltat,k)
+!$OMP DO SCHEDULE(runtime)
+      DO j = 1, npart
+         IF (iphase(j).GE.0) THEN
+            deltat = dt*(itime - it0(j))/imaxstep
+            dumx(j) = x(j) + deltat*vx(j)
+            dumy(j) = y(j) + deltat*vy(j)
+            dumz(j) = z(j) + deltat*vz(j)
+            dumvx(j) = vx(j) + deltat*f1vx(j)
+            dumvy(j) = vy(j) + deltat*f1vy(j)
+            dumvz(j) = vz(j) + deltat*f1vz(j)
+            dumu(j) = u(j) + deltat*f1u(j)
+            dumh(j) = h(j) + deltat*f1h(j)
+!!            IF (j==1) THEN
+!!               WRITE (iprint,*) 'itime=',itime,', it0(1)=',it0(1), &
+!!                     'imaxstep=',imaxstep,', dt=',dt
+!!               WRITE (iprint,*) 'deltat=',deltat
+!!               WRITE (iprint,*) 'x(1)=',x(1),', vx(1)=',vx(1), &
+!!                    ' --> dumx(1)=',dumx(1)
+!!            ENDIF
+         ENDIF
+      END DO
+!$OMP END DO
+
+!$OMP DO SCHEDULE(runtime)
+      DO j = npart + 1, npart + nghost
+         IF (iphase(j).GE.0) THEN
+            deltat = dt*isteps(isphcom)/imaxstep
+
+            x(j) = x(j) + deltat*vx(isphcom)
+            y(j) = y(j) + deltat*vy(isphcom)
+            z(j) = z(j) + deltat*vz(isphcom)
+         ENDIF
+      END DO
+!$OMP END DO
+
+!$OMP DO SCHEDULE(runtime)
+      DO j = npart + 1, npart + nghost
+         IF (iphase(j).GE.0) THEN
+            k = ireal(j)
+            deltat = dt*(itime - it0(k))/imaxstep
+!!            dumx(j) = x(j) + deltat*vx(j)
+!!            dumy(j) = y(j) + deltat*vy(j)
+!!            dumz(j) = z(j) + deltat*vz(j)
+            dumx(j) = x(j)
+            dumy(j) = y(j)
+            dumz(j) = z(j)
+            dumvx(j) = vx(j)
+            dumvy(j) = vy(j)
+            dumvz(j) = vz(j)
+            dumu(j) = u(j) + deltat*f1u(k)
+            dumh(j) = h(j) + deltat*f1h(k)
+         ENDIF
+      END DO
+!$OMP END DO
+!$OMP END PARALLEL
+
+      IF (hmaximum.GT.0.0) THEN
+!$OMP PARALLEL DO SCHEDULE(runtime) default(none) &
+!$OMP shared(npart,nghost,hmaximum,dumh) &
+!$OMP private(j)
+         DO j = 1, npart + nghost
+            IF (dumh(j).GT.hmaximum) dumh(j) = hmaximum
+         END DO
+!$OMP END PARALLEL DO
+      ENDIF
+!
+!--Total number of particles to compute forces on
+!
+      nlst = jj
+!
+!--Total number of particles on which forces are to be predicted
+!
+      nlst1 = nlst - nlst0
+!
+!--Make or update the tree
+!
+!!!      IF (nactive.NE.nptmass) THEN
+      IF (igrape.EQ.0 .AND. (nlst.GT.nptmass .OR. iptintree)) THEN
+         IF (nlst.GT.ncrit .OR. (nlst0.GT.ncrit.AND.imakeghost.EQ.1) &
+              .OR. idonebound.EQ.1 .OR. iaccr.EQ.1 .OR. ikilled.EQ.1) &
+              THEN
+            iaccr = 0
+            ikilled = 0
+!!            WRITE (iprint,*) '3: dumx(1)=',dumx(1),', dumy(1)=', &
+!!                 dumy(1),', dumz(1)=',dumz(1)
+            CALL insulate(1, ntot, npart, dumx, dumy, dumz,pmass,dumh)
+         ELSEIF (iptintree .OR. nlst.GT.nptmass) THEN
+            CALL insulate(2, ntot, npart, dumx, dumy, dumz,pmass,dumh)
+         ENDIF
+      ENDIF
+!
+!--Compute forces on list particles - Note: May be full AND 
+!  half time step evaluations!!
+!
+ 200  icall = 3
+      CALL derivi (dt,itime,dumx,dumy,dumz,dumvx, &
+           dumvy,dumvz,dumu,dumh,f2vx,f2vy,f2vz,f2u,f2h,npart, &
+           ntot,ireal)
+!
+!--Synchronization time
+!
+      idtsyn = itnext - itime
+      IF (idtsyn.EQ.0) idtsyn = imaxstep
+      ikilled = 0
+      istminold = istepmin
+      istepmin = imax
+      istepmax = 0
+      iptnum = 0
+      time = dt*itime/imaxstep + gt
+!
+!--Keep velocities at half time step
+!
+!$OMP PARALLEL default(none) &
+!$OMP shared(nlst0,nlst1,llist,iscurrent,dumvx,dumvy,dumvz) &
+!$OMP shared(dum2vx,dum2vy,dum2vz,it1,imax,igphi) &
+!$OMP shared(dgrav,dphit,u,dumu,vx,vy,vz) &
+!$OMP shared(f1vx,f1vy,f1vz,f1u,f1h,f2vx,f2vy,f2vz,f2u,f2h) &
+!$OMP shared(tol,tolh,tolptm,dt,isteps,imaxstep,e1,divv,rho) &
+!$OMP shared(ifsvi,alphasph,betasph) &
+!$OMP shared(alpha,beta,vsound,xlog2,gravx,gravy,gravz,gradpx,gradpy) &
+!$OMP shared(gradpz,artvix,artviy,artviz,gravx1,gravy1,gradpx1) &
+!$OMP shared(gradpy1,artvix1,artviy1,it0,idtsyn,ibound,deadbound) &
+!$OMP shared(xmin,xmax,ymin,ymax,zmin,zmax,igeom) &
+!$OMP shared(h,x,y,z,poten,nneigh,iphase,isphcom) &
+!$OMP shared(pmass,ikilled,nactive,nkill,time) &
+!$OMP shared(anglostx,anglosty,anglostz,istminold,numneighadd) &
+!$OMP shared(rhomaxsync) &
+!$OMP private(i,j,tolpart) &
+!$OMP private(errx,erry,errz,errvx,errvy,errvz,erru,errh,errm) &
+!$OMP private(errdivtol,rap,rmod1,divvi,aux1,aux2,aux3,denom) &
+!$OMP private(crstepi,rmodcr,force21,force22,force2,rmodcr2,rmod) &
+!$OMP private(stepi,ibin,factor,istep2,irat,r2,pmassi) &
+!$OMP private(irktlnum) &
+!$OMP reduction(MAX:istepmax) &
+!$OMP reduction(MIN:istepmin) &
+!$OMP shared(myrank)
+
+!$OMP DO SCHEDULE(runtime)
+!POPTION INDEP
+      DO j = nlst0 + 1, nlst0 + nlst1
+         i = llist(j)
+         iscurrent(i) = 0
+         dum2vx(i) = dumvx(i)
+         dum2vy(i) = dumvy(i)
+         dum2vz(i) = dumvz(i)
+!
+!--Label particles on which predicted forces have been computed
+!
+         it1(i) = imax
+      END DO
+!$OMP END DO
+!
+!--Compute new time steps for particles which have been advanced
+!
+!$OMP DO SCHEDULE(runtime)
+!POPTION LOCK_VARIABLE(killpar)
+!POPTION INITIALIZE_LOCK(killpar)
+!POPTION LOCK_VARIABLE(writeip)
+!POPTION INITIALIZE_LOCK(writeip)
+!POPTION LOCK_VARIABLE(rktotaln)
+!POPTION INITIALIZE_LOCK(rktotaln)
+!POPTION PARALLEL
+!POPTION MAX(istepmax)
+!POPTION MIN(istepmin)
+      DO 855 j = 1, nlst0
+         i = llist(j)
+         iscurrent(i) = 0
+!
+!--Save correction on gravitational potential
+!
+         IF (igphi.EQ.1) THEN
+            IF (isoft.EQ.0 .AND. iphase(i).EQ.0) &
+                                dgrav(i) = dgrav(i) + dphit(i)
+         ENDIF
+!
+!--Dead particle boundaries
+!
+         IF (ibound.EQ.8 .OR. ibound.GE.90) THEN
+            IF (igeom.EQ.1) THEN
+               IF ((x(i).LT.xmin) .OR. (x(i).GT.xmax) .OR. &
+                   (y(i).LT.ymin) .OR. (y(i).GT.ymax) .OR. &
+                   (z(i).LT.zmin) .OR. (z(i).GT.zmax)) THEN
+                  iphase(i) = -1
+                  pmassi = pmass(i)
+!$OMP CRITICAL (killparticle)
+!POPTION LOCK(killpar)
+                  ikilled = 1
+                  nactive = nactive - 1
+                  nkill = nkill + 1
+                  if(myrank.eq.0)then
+                  WRITE (ikillpr) i,time,x(i),y(i),z(i), &
+                    vx(i),vy(i),vz(i),poten(i),dgrav(i)
+                  FLUSH (ikillpr)
+                  endif
+                  anglostx = anglostx + pmassi*(y(i)*vz(i) - vy(i)*z(i))
+                  anglosty = anglosty + pmassi*(vx(i)*z(i) - x(i)*vz(i))
+                  anglostz = anglostz + pmassi*(x(i)*vy(i) - vx(i)*y(i))
+!POPTION UNLOCK(killpar)
+!$OMP END CRITICAL (killparticle)
+                  GOTO 855
+               ENDIF
+            ELSE
+               IF (igeom.EQ.4) THEN
+                  r2 = (x(i)-x(isphcom))**2 &
+                       + (y(i)-y(isphcom))**2 &
+                       + (z(i)-z(isphcom))**2
+               ELSE
+                  r2 = x(i)**2 + y(i)**2 + z(i)**2
+               ENDIF
+!!               IF (r2.GT.(1.05*deadbound)**2) THEN
+               IF ((iphase(i).EQ.0) .AND. &
+                  (r2.GT.(1.05*deadbound)**2)) THEN
+                  iphase(i) = -1
+                  pmassi = pmass(i)
+!$OMP CRITICAL (killparticle)
+!POPTION LOCK(killpar)
+                  ikilled = 1
+                  nactive = nactive - 1
+                  nkill = nkill + 1
+                  if(myrank.eq.0)then
+                  WRITE (ikillpr) i,time,x(i),y(i),z(i), &
+                    vx(i),vy(i),vz(i),poten(i),dgrav(i)
+                  FLUSH (ikillpr)
+                  endif
+                  anglostx = anglostx + pmassi*(y(i)*vz(i) - vy(i)*z(i))
+                  anglosty = anglosty + pmassi*(vx(i)*z(i) - x(i)*vz(i))
+                  anglostz = anglostz + pmassi*(x(i)*vy(i) - vx(i)*y(i))
+!POPTION UNLOCK(killpar)
+!$OMP END CRITICAL (killparticle)
+                  GOTO 855
+               ENDIF
+            ENDIF
+         ENDIF
+!
+!--Follow point masses with greater accuracy than the gas particles
+!
+         IF (iphase(i).GE.1) THEN
+            tolpart = tolptm
+         ELSE
+            tolpart = tol
+         ENDIF
+!
+!--Set u to it's new value from DERIVI
+!     For polytropic equation of state, the du's are not used - u(i)
+!       is calculated directly from the density, in each derivi call and
+!       put into dumu(i). Hence must be transferred from dumu(i) to u(i).
+!     For adiabatic (or isothermal) u(i) is calculated via the du's
+!       but this setting of u(i)=dumu(i) doesn't matter as the u(i)
+!       updated at the full timestep above, then put into dumu(i)
+!       but the derivi call doesn't alter them, so putting them back
+!       into u(i) again changes nothing.
+!
+         u(i) = dumu(i)
+!
+!--Estimate maximum error
+!
+         errx = ABS(vx(i) - dum2vx(i))
+         erry = ABS(vy(i) - dum2vy(i))
+         errz = ABS(vz(i) - dum2vz(i))
+         errvx = ABS(f1vx(i) - f2vx(i))
+         errvy = ABS(f1vy(i) - f2vy(i))
+         errvz = ABS(f1vz(i) - f2vz(i))
+         erru = ABS(f1u(i) - f2u(i))
+         errh = 3.0*ABS(f1h(i) - f2h(i))
+!
+!--Find maximum error
+!
+         errm = MAX(errx,erry,errz,errvx,errvy,errvz,erru)
+         errdivtol = MAX(errm/tolpart, errh/tolh)
+!
+!--Compute ratio of present to next timestep
+!
+         rap = dt*isteps(i)/imaxstep*errdivtol*e1 + small
+         rmod1 = 1./SQRT(rap)
+!
+!--Compute the time step for the gas from the Courant condition
+!
+         IF (iphase(i).EQ.0) THEN
+            divvi = divv(i)/rho(i)
+            IF (ifsvi.EQ.6) THEN
+               aux1 = alphasph*vsound(i)
+            ELSE
+               aux1 = alpha*vsound(i)
+            ENDIF
+            aux2 = h(i)*ABS(divvi)
+            aux3 = aux2
+            IF (divvi.LT.0.0) THEN
+               IF (ifsvi.EQ.6) THEN
+                  aux2 = betasph*aux2
+               ELSE
+                  aux2 = beta*aux2
+               ENDIF
+            ELSE
+               aux2 = 0.0
+            ENDIF
+            denom = aux3 + vsound(i) + 1.2*(aux1 + aux2)
+            crstepi = 0.3*h(i)/denom
+            rmodcr = crstepi/(dt*isteps(i)/imaxstep)
+            force21 = f1vx(i)*f1vx(i) + f1vy(i)*f1vy(i) + &
+                                                    f1vz(i)*f1vz(i)
+            force22 = f2vx(i)*f2vx(i) + f2vy(i)*f2vy(i) + &
+                                                    f2vz(i)*f2vz(i)
+            force2 = MAX(force21, force22)
+            rmodcr2 = 0.3*SQRT(h(i)/SQRT(force2))
+            rmodcr2 = rmodcr2/(dt*isteps(i)/imaxstep)
+!
+!--Decide which time step to take
+!
+            rmod = MIN(rmod1, rmodcr, rmodcr2)
+         ELSE
+            rmod = rmod1
+         ENDIF
+!
+!--Reduce time step (no synchronization needed)
+!
+!-- Neglect the behavior of the particle if it is in
+!   a very low density region (26 Nov 2000).
+         IF ((rmod.LT.0.97) .AND. &
+             (rho(i).GT.rhomaxsync*rhosmall)) THEN
+            stepi = dt*isteps(i)/imaxstep*rmod
+            ibin = INT(LOG10(dt/stepi)/xlog2) + 1
+
+            isteps(i) = imaxstep/(2**ibin)
+
+            IF (isteps(i).LT.2 .AND. rmod.EQ.rmod1 .AND. &
+                 errdivtol.GT.0.999*errh/tolh .AND. &
+                 errdivtol.LT.1.001*errh/tolh) THEN
+               factor = 2.0*(dt/imaxstep)/stepi
+!$OMP CRITICAL (writeiprint)
+!POPTION LOCK(writeip)
+               if(myrank.eq.0)WRITE(iprint,99200)
+!POPTION UNLOCK(writeip)
+!$OMP END CRITICAL (writeiprint)
+99200 FORMAT('**** R-K TOLERANCE TEMPORALLY INCREASED FOR dh ****')
+               IF (factor.GT.4.0) THEN
+!$OMP CRITICAL (writeiprint)
+!POPTION LOCK(writeip)
+                  if(myrank.eq.0) &
+                  WRITE (iprint,*) ' Tolerance increase too high'
+!POPTION UNLOCK(writeip)
+!$OMP END CRITICAL (writeiprint)
+                  GOTO 7777
+               ENDIF
+!$OMP CRITICAL (writeiprint)
+!POPTION LOCK(writeip)
+               if(myrank.eq.0)then
+               WRITE(iprint,*)' Increased by:',factor*factor
+               WRITE(iprint,*) '  part. i x,y,z',i,x(i),y(i),z(i)
+               WRITE(iprint,*) '    vx,vy,vz',vx(i),vy(i),vz(i)
+               WRITE(iprint,*) '    h,rho',h(i),rho(i)
+               WRITE(iprint,*) '    rm1,rmc,rmc2',rmod1,rmodcr,rmodcr2
+               WRITE(iprint,*) '    neigh ',nneigh(i)
+               WRITE(iprint,*) '    divv ',divv(i)
+               WRITE(iprint,*) '    f1h,f2h ',f1h(i),f2h(i)
+               WRITE(iprint,*) '    tryst,omin ',isteps(i),istminold
+               endif
+!POPTION UNLOCK(writeip)
+!$OMP END CRITICAL (writeiprint)
+               isteps(i) = 2
+
+!$OMP CRITICAL (rktotalnum)
+!POPTION LOCK(rktotaln)
+               irktlnum = irktlnum + 1
+               IF (irktlnum.GT.10) THEN
+                  CALL quit
+               ENDIF
+!POPTION UNLOCK(rktotaln)
+!$OMP END CRITICAL (rktotalnum)
+
+               GOTO 7777
+            ENDIF
+         ENDIF
+!
+!--Increase time step, if synchronization allows
+!
+         IF (rmod.GE.2.0) THEN
+            istep2 = 2*isteps(i)
+            irat = MOD(idtsyn, istep2)
+            IF (irat.EQ.0) THEN
+               isteps(i) = istep2
+            ENDIF
+         ENDIF
+ 7777    IF (isteps(i).GT.imaxstep) isteps(i) = imaxstep
+!
+!--Report if time steps are too small
+!
+         IF (isteps(i).LT.2) THEN
+!$OMP CRITICAL (writeiprint)
+!POPTION LOCK(writeip)
+            if(myrank.eq.0)then
+            WRITE (iprint, 99300)
+99300       FORMAT ('STEP : Step too small! Nothing can help!')
+            WRITE (iprint,*) 'i =',i,': iphase =',iphase(i)
+            WRITE (iprint,*) '  x =',x(i),', y =',y(i),', z =',z(i)
+            WRITE (iprint,*) '  vx =',vx(i),', vy =',vy(i), &
+                           ', vz =',vz(i),', u =',u(i),', h =',h(i)
+            WRITE (iprint,*) '  flvx =',f1vx(i),', flvy =',f1vy(i), &
+                           ', flvz =',f1vz(i)
+            WRITE (iprint,*) '  f2vx =',f2vx(i),', f2vy =',f2vy(i), &
+                           ', f2vz =',f2vz(i)
+            WRITE (iprint,*) '  rmod1 =',rmod1,', rmodcr =',rmodcr, &
+                           ', rmodcr2 =',rmodcr2
+            WRITE (iprint,*) '  nneigh =',nneigh(i), &
+                           ', numneighadd =',numneighadd(i), &
+                           ', rho =',rho(i)
+            WRITE (iprint,*) '  errx =',errx,', erry =',erry, &
+                           ', errz =',errz
+            WRITE (iprint,*) '  errvx =',errvx,',  errvy =',errvy, &
+                           ', errvz =',errvz,', erru =',erru, &
+                           ', errh =',errh
+            WRITE (iprint,*) '  gravx =',gravx(i), &
+                           ', gravy =',gravy(i), &
+                           ', gravz =',gravz(i)
+            WRITE (iprint,*) '  gradpx =',gradpx(i), &
+                            ', gradpy =',gradpy(i), &
+                            ', gradpz =',gradpz(i)
+            WRITE (iprint,*) '  artvix =',artvix(i), &
+                           ', artviy =',artviy(i), &
+                           ', artviz =',artviz(i)
+            endif
+            CALL quit
+!POPTION UNLOCK(writeip)
+!$OMP END CRITICAL (writeiprint)
+         ENDIF
+!
+!--Update minimum time step
+!
+         istepmax = MAX(istepmax, isteps(i))
+         istepmin = MIN(istepmin, isteps(i))
+!
+!--Reset variables
+!
+         f1vx(i) = f2vx(i)
+         f1vy(i) = f2vy(i)
+         f1vz(i) = f2vz(i)
+         f1u(i) = f2u(i)
+         f1h(i) = f2h(i)
+
+         gravx1(i) = gravx(i)
+         gravy1(i) = gravy(i)
+         gradpx1(i) = gradpx(i)
+         gradpy1(i) = gradpy(i)
+         artvix1(i) = artvix(i)
+         artviy1(i) = artviy(i)
+
+         it1(i) = it0(i) + isteps(i)/2
+ 855  CONTINUE
+!$OMP END DO
+!$OMP END PARALLEL
+!
+!--Make point mass timesteps equal to the minimum time step used
+!
+      DO i = 1, nptmass
+         iptcur = listpm(i)
+         IF (istepmin.GT.isteps(iptcur)) THEN
+            istep2 = 2*isteps(iptcur)
+            irat = MOD(idtsyn, istep2)
+            IF (irat.EQ.0) THEN
+               isteps(iptcur) = istep2
+               istepmin = isteps(iptcur)
+               it1(iptcur) = it0(iptcur) + isteps(iptcur)/2
+            ENDIF
+         ELSEIF (istepmin.LT.isteps(iptcur)) THEN
+            isteps(iptcur) = istepmin
+            it1(iptcur) = it0(iptcur) + isteps(iptcur)/2
+         ENDIF
+      END DO
+!
+!--Allow for tracing flow
+!
+      if(myrank.eq.0)then
+      IF (itrace.EQ.'all') WRITE (iprint,252) dt*itime/imaxstep, &
+           nlst0, itime
+      endif
+ 252  FORMAT (' step time ', 1F12.5,', particles moved ', I6, &
+           ' int time ', I10)
+!
+!--Update time
+!
+      IF (itime.GE.iteighth) THEN
+         IF (MOD(ncount, nprout).EQ.0 .OR. &
+            MOD(ncount, nstep).EQ.0) THEN
+         if(myrank.eq.0) WRITE(iprint,253) dt*itime/imaxstep + gt, &
+              dt*itime/imaxstep, nlst0
+ 253     FORMAT ('Dynamic time = ', 1PE17.10, &
+              ' Step time = ', 1PE12.5,' Moved ', I10)
+         ENDIF
+
+!         IF (nptmass.EQ.0) GOTO 700
+
+         GOTO 700
+
+         iptdump = iptdump + 1
+         if(myrank.eq.0)WRITE (itemchar, 3333) iptdump
+ 3333    FORMAT (I2)
+         ptdebug = 'PTD' // itemchar
+
+         dytime = dt*itime/imaxstep + gt
+
+         IF (dytime.LT.50.0) THEN
+            if(myrank.eq.0)WRITE(iprint,*)' Ptmass debug dump'
+
+            OPEN (15, FILE = ptdebug)
+
+            tcomp = SQRT((3 * pi) / (32 * rhozerox))
+!!            tcomp = SQRT((3*pi)/(32*rhozero))
+            if(myrank.eq.0)WRITE(15,*) '#', dytime, dytime/tcomp
+
+            DO i = 1,npart
+               IF (iphase(i).NE.-1) THEN
+                  iipt = listpm(1)
+                  rx = x(i) - x(iipt)
+                  ry = y(i) - y(iipt)
+                  rz = z(i) - z(iipt)
+                  r2 = rx*rx + ry*ry + rz*rz
+                  r = SQRT(r2)
+                  IF (r.EQ.0.0) THEN
+                     vr = 0.0
+                     vth = 0.0
+                  ELSE
+                     vr = (vx(i)*rx + vy(i)*ry + vz(i)*rz)/r
+                     vv = vx(i)*vx(i) + vy(i)*vy(i) + vz(i)*vz(i)
+                     vth = vv - vr*vr
+                     IF (vth.LT.0.) THEN
+                        vth = 0.
+                     ELSE
+                        vth = SQRT(vv - vr*vr)
+                     ENDIF
+                  ENDIF
+
+                  if(myrank.eq.0)then
+                  IF (r.LT.hacc*5.0) WRITE(15,333) r,dumx(i),dumy(i), &
+             dumz(i),rho(i),rho1(i),rho2(i), &
+             accgot1(i),tanviscfor1(i), &
+             dumh(i),densgrad(i), &
+             vr,vth,dumu(i),divv(i), &
+             nneigh(i),numneighadd(i),i,iphase(i)
+                  endif
+ 333              FORMAT(17(1PE13.6,1X),I6,1X,I6,1X,I6,1X,I6)
+               ENDIF
+            END DO
+
+            if(myrank.eq.0)CLOSE (15)
+         ENDIF
+
+ 700     CONTINUE
+         if(myrank.eq.0)then
+         FLUSH (iprint)
+         FLUSH (iptprint)
+         endif
+         iteighth = itime + imaxstep/8
+      ENDIF
+!
+!--Accrete particles near point mass, or create point mass
+!
+      IF (nptmass.NE.0 .OR. icreate.EQ.1) THEN
+         isave = 0
+         IF (itime.GE.iptout) THEN
+            isave = 1
+            iptout = itime + imaxstep/iptoutnum
+         ENDIF
+         realtime = dt*itime/imaxstep + gt
+!
+!--Accrete particles near point mass, or create point mass
+         CALL accrete(dt, realtime, isave)
+!                                                                       
+!--Split particles near the accretor in the case of a binary            
+!        (10 June 2012, A. Okazaki)                                       
+         IF (nptmass.EQ.2 .AND. isplit.NE.0) THEN 
+            CALL psplit
+         ENDIF 
+!
+!--Create NEW particles to keep number of particles within a shell
+!     constant.
+!
+!  imaxstep : 2^29  ; injfrq : 2^2  ; imaxstep/injfrq = 2^27
+!  MOD(itime,imaxstep/injfrq) : itime - INT(itime/2^27) * 2^27
+!
+         injfrq = 8
+!!         injfrq = 4
+!!         injfrq = 1
+         IF (ibound.GE.90) THEN
+            IF (ibound.EQ.92 .OR. ibound.EQ.93) THEN
+               !-- Before 14 July 2016
+               !! nlst0 = INT(nshell*emdot0*realtime)-nreassign
+               !-- After 14 July 2016
+               IF  (MOD(itime,imaxstep/injfrq).EQ.0) THEN
+                  nlst0 = INT(nshell*emdot0*dt/injfrq)
+               ELSE
+                  nlst0 = 0
+               END IF
+            ELSEIF (ibound >= 94 .AND. ibound <= 97) THEN
+               IF (MOD(itime,imaxstep/injfrq).EQ.0) THEN
+!----             Don't use NINT (instead of INT) below, which can
+!                 make nlsts1, nlsts2, and nlsts3 negative!
+                  nlsts1 = INT(nshell1(1)*emdot0*realtime-sinj(1))
+                  nlsts2 = INT(nshell1(2)*emdot0*realtime-sinj(2))
+                  nlst0  = nlsts1 + nlsts2
+                  sinj(1) = sinj(1) + nlsts1
+                  sinj(2) = sinj(2) + nlsts2
+                  IF (ibound.EQ.95) THEN
+                     nlsts3 = INT(nshell1(3)*emdot0*realtime-sinj(3))
+                     nlst0  = nlst0 + nlsts3
+                     sinj(3) = sinj(3) + nlsts3
+                  ENDIF
+               ELSE
+                  nlst0 = 0
+               ENDIF
+               
+            ELSEIF (ibound.EQ.99) THEN
+!
+!  imaxstep : 2^29  ; injfrq : 2^3  ; imaxstep/injfrq = 2^26
+!  MOD(itime,imaxstep/injfrq) : itime - INT(itime/2^26) * 2^26
+!
+               injfrq = 8
+               IF (MOD(itime,imaxstep/injfrq).EQ.0) THEN
+!--Obtain the phase of the binary which is equal to
+!     (the mean anomaly)/2*pi. In the following,
+!        anomtrue: the true anomaly,
+!        anomecc: the eccentric anomaly,
+!        anommean: the mean anomaly.
+!     See, e.g., Sect.2.4 of Murray & Dermott "Solar System Dynamics."
+                  xp = x(2) - x(1)
+                  yp = y(2) - y(1)
+                  vxp = vx(2) - vx(1)
+                  vyp = vy(2) - vy(1)
+
+                  IF (pmass(1).GE.pmass(2)) THEN
+                     anomtrue = ATAN2(yp,xp) - pi
+                  ELSE
+                     anomtrue = ATAN2(yp,xp)
+                  ENDIF
+                  IF (anomtrue.LT.0.0) anomtrue=anomtrue+2.0*pi
+
+                  rp = SQRT(xp*xp+yp*yp)
+                  energyp = 0.5*(vxp*vxp+vyp*vyp)-1.0/rp
+                  angmomp = xp*vyp-yp*vxp
+                  semiaxis = -0.5/energyp
+                  eccent = SQRT(1.0-angmomp*angmomp/semiaxis)
+                  anomecc = ATAN(TAN(anomtrue*0.5) &
+                             *SQRT((1.0-eccent)/(1.0+eccent))) &
+                             *2.0
+                  IF (anomtrue.EQ.0.0) THEN
+                     anomecc = 0.0
+                  ELSEIF (anomtrue.EQ.pi) THEN
+                     anomecc = pi
+                  ELSEIF (anomtrue.GT.0.0) THEN
+                     IF (anomecc.LT.0.0) THEN
+                        anomecc = anomecc + 2.0*pi
+                     ENDIF
+                  ELSE
+                     IF (anomecc.GT.0.0) THEN
+                        anomecc = anomecc - 2.0*pi
+                     ENDIF
+                  ENDIF
+
+                  anommean = anomecc - eccent*SIN(anomecc)
+                  iphsi = NINT(anommean/(dphasei*pi*2.0))+1
+
+                  IF (iphsi.EQ.nphasei+1) iphsi=1
+                  sinj(1) = sinj(1) &
+                            + emdot0*eninfl(iphsi)*dt/DBLE(injfrq)
+                  nlst0 = NINT(sinj(1))-nreassign
+
+!!!!                  write(*,*) itime,gt,iphsi,sinj(1),nlst0
+!!                  WRITE (iprint,*) 'True anomaly/2*pi =',
+!!     &                             anomtrue/(2.0*pi)
+!!                  WRITE (iprint,*) 'Eccentric anomaly/2*pi =',
+!!     &                             anomecc/(2.0*pi)
+!!                  WRITE (iprint,*) 'Mean anomaly/2*pi =',
+!!     &                             anommean/(2.0*pi)
+               ELSE
+                  nlst0 = 0
+               ENDIF
+            ELSE
+               nlst0 = nshell-inshell
+            ENDIF
+
+            IF (nlst0 .GT.0) THEN
+               iaccr = 0
+               ikilled = 0
+               ilenlistsave = ilenlist
+               nneightotsave = nneightot
+               internumsave = internum
+               nlst = nlst0
+
+               iresume = nptmass+1
+               ii = 0
+               DO i = 1, nlst0
+                  j1 = iresume
+                  DO j=j1,npart
+                     IF (iphase(j).EQ.-1) THEN
+                        nnew = j
+                        iresume = j+1
+                        GOTO 92
+                     ENDIF
+                  ENDDO
+                  ii = ii+1
+                  nnew = npart+ii
+
+ 92               llist(i) = nnew
+                  IF (ibound >=  94 .AND. ibound <= 97) THEN
+                     IF (i.LE.nlsts1) THEN
+                        CALL phoenix(1, nnew, idtsyn, itime)
+                     ELSEIF (i.LE.nlsts1+nlsts2) THEN
+                        CALL phoenix(2, nnew, idtsyn, itime)
+                     ELSE
+!----                   The following line is executed only if ibound=95
+                        CALL phoenix(3, nnew, idtsyn, itime)
+                     ENDIF
+                  ELSE
+                     CALL phoenix(isphcom, nnew, idtsyn, itime)
+                  ENDIF
+                  nactive = nactive + 1
+               END DO
+
+!!               IF (ibound.EQ.94 .OR. ibound.EQ.96) THEN
+!!                  WRITE (iprint,*) 'Added ',nlst0,'(1:',nlsts1, &
+!!                       ', 2:',nlsts2,') particles'
+!!               ELSEIF (ibound.EQ.95) THEN
+!!                  WRITE (iprint,*) 'Added ',nlst0,'(1:',nlsts1, &
+!!                       ', 2:',nlsts2,', 3:',nlsts3,') particles'
+!!               ELSEIF (ibound.EQ.99) THEN
+!!                  WRITE (iprint,*) 'Added ',nlst0,' particles', &
+!!                                ' at phi/2*pi =',anommean/(2.0*pi)
+!!               ELSE
+!!                  WRITE (iprint,*) 'Added ',nlst0,' particles'
+!!               ENDIF
+
+               npart = npart + ii
+               IF (npart.GT.idim) THEN
+                  CALL error(where,3)
+               ENDIF
+
+               DO j = 1, nlst0
+                  iscurrent(llist(j)) = 1
+               END DO
+
+               nghost = 0
+               IF (ibound.EQ.1) &
+                  CALL ghostp1(npart,x,y,z,vx,vy,vz,u,h)
+               IF (ibound.EQ.2) &
+                  CALL ghostp2(npart,x,y,z,vx,vy,vz,u,h)
+!!               IF (ibound.EQ.3 .OR. ibound.EQ.8 .OR. ibound.GE.90)
+               IF (ibound.EQ.3 .OR. ibound.EQ.8.OR. ibound.EQ.96 &
+               .OR. ibound.EQ.97) &
+                   CALL ghostp3(npart,x,y,z,vx,vy,vz,u,h)
+               ntot = npart + nghost
+
+               DO i = 1, nlst0
+                  j = llist(i)
+                  IF (iphase(j).GE.0) THEN
+                     dumx(j) = x(j)
+                     dumy(j) = y(j)
+                     dumz(j) = z(j)
+                     dumvx(j) = vx(j)
+                     dumvy(j) = vy(j)
+                     dumvz(j) = vz(j)
+                     dumu(j) = u(j)
+                     dumh(j) = h(j)
+                  ENDIF
+               END DO
+               DO j = npart + 1, npart + nghost
+                  IF (iphase(j).GE.0) THEN
+                     k = ireal(j)
+                     deltat = dt*(itime - it0(k))/imaxstep
+                     dumx(j) = x(j) + deltat*vx(j)
+                     dumy(j) = y(j) + deltat*vy(j)
+                     dumz(j) = z(j) + deltat*vz(j)
+                     dumvx(j) = vx(j)
+                     dumvy(j) = vy(j)
+                     dumvz(j) = vz(j)
+                     dumu(j) = u(j) + deltat*f1u(k)
+                     dumh(j) = h(j) + deltat*f1h(k)
+                  ENDIF
+               END DO
+
+               IF (igrape.EQ.0) THEN
+!!               WRITE (iprint,*) '4: dumx(1)=',dumx(1),', dumy(1)=',dumy(1), &
+!!                    ', dumz(1)=',dumz(1)
+                  CALL insulate(1,ntot,npart,dumx,dumy,dumz, &
+                                pmass,dumh)
+               ENDIF
+
+               neighmean = (neimax + neimin)/2
+
+               iokay = 1
+               DO j = 1, nlst0
+                  i = llist(j)
+
+                  ivalue = 0
+                  ichkloop = 0
+ 2000             ichkloop = ichkloop + 1
+
+                  IF (igrape.EQ.0) THEN
+                     CALL insulate(3,ntot,npart,dumx,dumy,dumz, &
+                                   pmass,dumh)
+                     numneigh = nneigh(i)
+                  ELSE
+!!!                     CALL insulate(4,ntot,npart,dumx,dumy,dumz,
+!!!     &                                pmass,dumh)
+                     CALL getneigh(i,ntot,h(i),dumx,dumy,dumz, &
+                                   nlist,nearl)
+                     numneigh = nlist
+                  ENDIF
+
+!!                  IF (numneigh.GT.1) THEN
+!!                     h(i) = (h(i)/
+!!     &                 (DBLE(numneigh)/DBLE(neighmean))**(1.0/3.0) +
+!!     &                 ivalue*h(i))/(ivalue + 1)
+!!                  ELSE
+!!                     h(i) = h(i)*2.0
+!!                  ENDIF
+!!                  dumh(i) = h(i)
+!!                  IF (igrape.EQ.1) hmax(i) = h(i)
+!!                  IF (ichkloop.GT.10) THEN
+!!                     ivalue = 2
+!!                     IF (ichkloop.GT.20) ivalue = 4
+!!                     IF (ichkloop.GT.30) ivalue = 8
+!!                  ENDIF
+!!                  IF (ichkloop.GT.500) CALL error(where,2)
+!!
+!!                  IF (numneigh.GT.(neimax - nrange) .OR.
+!!     &                 numneigh.LT.(neimin + nrange)) GOTO 2000
+!----             The above algorithm was replaced with the following
+!                 one (A. Okazaki, 02/09/2007)
+                  IF ((numneigh.LE.neimax - nrange) .AND. &
+                      (numneigh.GE.neimin + nrange)) THEN
+                     dumh(i) = h(i)
+                     IF (igrape.EQ.1) hmax(i) = h(i)
+                  ELSE
+                     IF (numneigh.GT.neimax - nrange) THEN
+                        IF (ichkloop.EQ.1) THEN
+                           IF (hmaximum.GT.0.0) THEN
+                              hhigh = MIN(h(i), hmaximum)
+                              hlow = -9.999
+                              h(i) = MIN(0.5*h(i), hmaximum)
+                           ELSE
+                              hhigh = MIN(h(i), deadbound)
+                              hlow = -9.999
+                              h(i) = MIN(0.5*h(i), deadbound)
+                           ENDIF
+                        ELSE
+                           IF (hmaximum.GT.0.0) THEN
+                              hhigh = MIN(h(i), hmaximum)
+                           ELSE
+                              hhigh = MIN(h(i), deadbound)
+                           ENDIF
+                           IF (hlow.LT.0.0) THEN
+                              h(i) = 0.5*hhigh
+                           ELSE
+                              h(i) = 0.5*(hhigh+hlow)
+                           ENDIF
+                        ENDIF
+                        dumh(i) = h(i)
+                        IF (igrape.EQ.1) hmax(i) = h(i)
+                     ELSE
+                        IF (ichkloop.EQ.1) THEN
+                           hhigh = -9.999
+                           hlow = h(i)
+                           IF (hmaximum.GT.0.0) THEN
+                              h(i) = MIN(2.0*hlow, hmaximum)
+                           ELSE
+                              h(i) = MIN(2.0*hlow, deadbound)
+                           ENDIF
+                        ELSE
+                           hlow = h(i)
+                           IF (hhigh.LT.0.0) THEN
+                              IF (hmaximum.GT.0.0) THEN
+                                 h(i) = MIN(2.0*hlow, hmaximum)
+                              ELSE
+                                 h(i) = MIN(2.0*hlow, deadbound)
+                              ENDIF
+                           ELSE
+                              h(i) = 0.5*(hhigh+hlow)
+                           ENDIF
+                        ENDIF
+                        dumh(i) = h(i)
+                        IF (igrape.EQ.1) hmax(i) = h(i)
+                     ENDIF
+                     IF (h(i).LE.0.0 .OR. h(i).NE.hmaximum) THEN
+                        IF (h(i).GT.deadbound .OR. ichkloop.GT.500) THEN
+                           if(myrank.eq.0) &
+                           WRITE (iprint,*) ichkloop,': h(',i,')=',h(i), &
+                              ', numneigh=',numneigh
+                           CALL error(where,2)
+                        ELSE
+                           GOTO 2000
+                        ENDIF
+                     ENDIF
+                  ENDIF
+               END DO
+
+               icall = 4
+               CALL derivi (dt,itime,dumx,dumy, &
+                    dumz,dumvx,dumvy,dumvz,dumu,dumh,f1vx,f1vy, &
+                    f1vz,f1u,f1h,npart,ntot,ireal)
+
+               time = dt*itime/imaxstep + gt
+               if(myrank.eq.0)then
+               WRITE (ireasspr) time,isphcom, &
+                     x(isphcom),y(isphcom),z(isphcom), &
+                     vx(isphcom),vy(isphcom),vz(isphcom), &
+                     nlst0
+               FLUSH (ireasspr)
+               endif
+               DO j = 1, nlst0
+                  i = llist(j)
+                  if(myrank.eq.0)then
+                  WRITE (ireasspr) i,x(i),y(i),z(i),vx(i),vy(i), &
+                       vz(i),h(i),u(i),poten(i)
+                  FLUSH (ireasspr)
+                  endif
+                  iscurrent(i) = 0
+               END DO
+
+               ilenlist = ilenlistsave
+               nneightot = nneightotsave
+               internum = internumsave
+!
+!--End creation of NEW particles
+!
+            ENDIF
+         ENDIF
+
+         IF (nactive - nptmass.LT.50 .AND. nactive.NE.nptmass) &
+                                            CALL error(where,1)
+
+      ENDIF
+!
+!--If accreted mass and angular momentum is large enough, then add on to
+!     previous point mass's mass and momentum
+!
+      DO ii = 1, nptmass
+         i = listpm(ii)
+         IF (ptmadd(ii)/ptmsyn(ii).GT.0.001 .OR. itime.GE.itnext) THEN
+            ptmsyn(ii) = ptmsyn(ii) + ptmadd(ii)
+            ptmadd(ii) = 0.0
+            pmasspt = ptmsyn(ii)
+            vx(i) = (xmomsyn(ii) + xmomadd(ii))/pmasspt
+            vy(i) = (ymomsyn(ii) + ymomadd(ii))/pmasspt
+            vz(i) = (zmomsyn(ii) + zmomadd(ii))/pmasspt
+         ENDIF
+      END DO
+!
+!--If binary with mean-Roche-lobe sized accretion radii under massive
+!      accretion, then dynamically evolve the accretion radii.
+!
+      IF (nptmass.EQ.2 .AND. (iaccevol.EQ.'v' .OR. &
+                                          iaccevol.EQ.'s')) THEN
+         ipt1 = listpm(1)
+         ipt2 = listpm(2)
+         qratio = pmass(ipt2)/pmass(ipt1)
+         IF (qratio.GT.1.0) THEN
+            ipt1 = listpm(2)
+            ipt2 = listpm(1)
+            qratio = pmass(ipt2)/pmass(ipt1)
+         ENDIF
+         qratio1 = qratio + 1.0
+
+         totmass = pmass(ipt1) + pmass(ipt2)
+         dx = x(ipt1) - x(ipt2)
+         dy = y(ipt1) - y(ipt2)
+         dz = z(ipt1) - z(ipt2)
+         dvx = vx(ipt1) - vx(ipt2)
+         dvy = vy(ipt1) - vy(ipt2)
+         dvz = vz(ipt1) - vz(ipt2)
+         dr = SQRT(dx*dx + dy*dy + dz*dz)
+!
+!!         binj = dvy*dx - dvx*dy
+!!         semiaxis = binj*binj/totmass
+         semiaxis = dr
+!
+!--Set accretion radii to be the roche lobe sizes
+!     (see Accretion Power in Astrophysics, Frank, King, & Raine)
+!
+         IF (iaccevol.EQ.'v') THEN
+            IF (qratio.GE.0.05) THEN
+               h(ipt1) = accfac*semiaxis*(0.38 - 0.20*LOG10(qratio))
+            ELSE
+               if(myrank.eq.0)WRITE (iprint,*) 'ERROR: qratio < 0.05'
+               CALL quit
+            ENDIF
+            IF (qratio.LT.0.5) THEN
+               h(ipt2) = accfac*semiaxis* &
+                    (0.462*(qratio/qratio1)**(1.0/3.0))
+            ELSE
+               h(ipt2) = accfac*semiaxis*(0.38 + 0.20*LOG10(qratio))
+            ENDIF
+!
+!--Set accretion radii to be some fraction of the separation
+!
+         ELSEIF (iaccevol.EQ.'s') THEN
+            h(ipt1) = accfac*semiaxis
+            h(ipt2) = accfac*semiaxis
+         ENDIF
+
+         hacc = h(ipt2)
+         haccall = h(ipt2)
+!
+      ENDIF
+!
+!--Return or loop again
+!
+      IF (itime.GE.itnext) THEN
+         DO i = 1, npart
+            IF (iphase(i).NE.-1) THEN
+               it0(i) = 0
+               it1(i) = isteps(i)/2
+            ENDIF
+         END DO
+
+         IF (igrape.EQ.0) THEN
+            ilenlist = 0
+            nneightot = 0
+            DO i = 1, nlst
+               ipart = llist(i)
+               ilenlist = ilenlist + ilen(ipart)
+               nneightot = nneightot + nneigh(ipart)
+            END DO
+         ENDIF
+
+         RETURN
+      ENDIF
+
+      ilocal = ilocal + 1
+      IF (MOD(ilocal,50).EQ.0) THEN
+         ilocal = 0
+         CALL secmes
+      ENDIF
+
+      GOTO  100
+
+      END SUBROUTINE step

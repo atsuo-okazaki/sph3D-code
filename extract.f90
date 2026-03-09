@@ -1,0 +1,215 @@
+      SUBROUTINE extract
+!************************************************************
+!                                                           *
+!  This subroutine extracts one dump from a binary output   *
+!     file                                                  *
+!                                                           *
+!************************************************************
+
+      use idims
+
+      use units
+      use part
+      use densi
+      use typef
+      use carac
+      use cgas
+      use kerne
+      use gtime
+      use bodys
+      use ener
+      use fracg
+      use phase
+      use ptmass
+      use binary
+      use torq
+      use timei
+      use stepopt
+      use polyk2
+
+      implicit none
+
+      INTEGER(I4B) :: ii, image, in, inew, ireduct, j, nfile, nptmassnew, &
+               i, imo, k
+      REAL(DP) :: cmx, cmy, cmz, pmtot, vcmx, vcmy, vcmz, howmuch
+      CHARACTER(len=20) :: ifile(10), ofile
+      CHARACTER(len=1) :: iok, iok2, iokm
+
+1000  FORMAT (A20)
+1001  FORMAT (A1)
+
+      nfile = 1
+
+      PRINT *, 'name of file to be extracted ?'
+
+      DO i = 1, nfile
+         READ (*, 1000) ifile(i)
+      END DO
+
+      PRINT *, 'name of reduced file ?'
+      READ (*, 1000) ofile
+      OPEN (UNIT = 7, FILE = ofile, FORM = 'unformatted')
+
+      PRINT *, 'dump to be extracted'
+      READ *, ireduct
+      PRINT *, 'do you want time reset to zero ?'
+      READ (*,1001) iok
+      PRINT *, 'do you want to reset centre of mass ?'
+      READ (*,1001) iokm
+
+      image = 0
+      imo = 0
+
+      DO 15 k = 1, nfile
+
+         OPEN (UNIT = 8, FILE = ifile(k), FORM = 'unformatted')
+         PRINT *, 'reading file ', ifile(k)
+
+         DO 10 j = 1, 9999
+
+            image = image + 1
+
+            PRINT *, 'reading image number ', image
+
+            READ (8, END=100) udist, umass, utime, &
+                 npart, n1, n2, gt, gamma, rhozero, RK21, &
+                 (h(i), i=1, npart), escap, tkin, tgrav, tterm, &
+                 (x(i), i=1, npart), (y(i), i=1, npart), &
+                 (z(i), i=1, npart), (vx(i), i=1, npart), &
+                 (vy(i), i=1, npart), (vz(i), i=1, npart), &
+                 (u(i), i=1, npart), (pmass(i), i=1, npart), &
+                 (rho(i), i=1, npart), (dgrav(i), i=1, npart), &
+                 dtmax, (isteps(i), i=1, npart), &
+                 (iphase(i), i=1, npart), &
+                 nptmass,(listpm(i), i=1, nptmass), &
+                 (spinx(i),i=1,nptmass),(spiny(i),i=1,nptmass), &
+                 (spinz(i),i=1,nptmass), &
+                 (angaddx(i),i=1,nptmass), (angaddy(i),i=1,nptmass), &
+                 (angaddz(i),i=1,nptmass), &
+                 anglostx, anglosty, anglostz, &
+                 nreassign, naccrete, nkill, specang, ptmassin, &
+                 (spinadx(i),i=1,nptmass),(spinady(i),i=1,nptmass), &
+                 (spinadz(i),i=1,nptmass), &
+                 (torqt(i), i=1, npart), (torqg(i), i=1, npart), &
+                 (torqp(i), i=1, npart),(torqv(i), i=1, npart), &
+                 (torqc(i), i=1, npart)
+
+            IF (image.EQ.ireduct) THEN
+
+               IF (iokm.EQ.'y' .OR. iokm.EQ.'Y') THEN
+                  cmx = 0.
+                  cmy = 0.
+                  cmz = 0.
+                  vcmx = 0.
+                  vcmy = 0.
+                  vcmz = 0.
+                  pmtot = 0.
+                  DO i =1, npart
+                     cmx = cmx + pmass(i)*x(i)
+                     cmy = cmy + pmass(i)*y(i)
+                     cmz = cmz + pmass(i)*z(i)
+                     vcmx = vcmx + pmass(i)*vx(i)
+                     vcmy = vcmy + pmass(i)*vy(i)
+                     vcmz = vcmz + pmass(i)*vz(i)
+                     pmtot = pmtot + pmass(i)
+                  END DO
+                  cmx = cmx/pmtot
+                  cmy = cmy/pmtot
+                  cmz = cmz/pmtot
+                  vcmx = vcmx/pmtot
+                  vcmy = vcmy/pmtot
+                  vcmz = vcmz/pmtot
+                  DO i = 1, npart
+                     x(i) = x(i) - cmx
+                     y(i) = y(i) - cmy
+                     z(i) = z(i) - cmz
+                     vx(i) = vx(i) - vcmx
+                     vy(i) = vy(i) - vcmy
+                     vz(i) = vz(i) - vcmz
+                  END DO
+               END IF
+
+               PRINT *, 'writing image just read on output file'
+               imo = imo + 1
+               IF (iok.EQ.'y') gt = 0.0
+
+               PRINT *, ' do you want to add point masses ? '
+               READ (*,1001) iok2
+
+               IF (iok2.EQ.'y') THEN
+                  PRINT *, ' reading from file externcluster '
+                  OPEN (UNIT=13, FILE='externcluster')
+                  READ (13,*) nptmassnew
+                  DO in = 1, nptmassnew
+                     inew = in + npart
+                     READ(13,*) x(inew), y(inew), z(inew), pmass(inew), &
+                          vx(inew), vy(inew), vz(inew), h(inew)
+                     iphase(inew) = 1
+                     listpm(nptmass+in) = inew
+                     spinx(nptmass+in) = 0.
+                     spiny(nptmass+in) = 0.
+                     spinz(nptmass+in) = 0.
+                     u(inew) = tiny
+                     rho(inew) = tiny
+                     dgrav(inew) = 0.
+                  END DO
+                  n2 = nptmassnew
+                  hacc = h(inew)
+                  haccall = 0.2*hacc
+                  npart = npart + nptmassnew
+                  nptmass = nptmass + nptmassnew
+               ENDIF
+               PRINT *, ' do you want to change masses and temps ? '
+               READ (*,1001) iok2
+               IF (iok2.EQ.'y') THEN
+                  PRINT *, ' by how much ?'
+                  READ *, howmuch
+                  DO ii = 1, npart
+                     IF (iphase(ii).EQ.0) THEN
+                        pmass(ii) = pmass(ii) * howmuch
+!                        u(ii) = u(ii) * howmuch
+                     ENDIF
+                  END DO
+               ENDIF
+!
+!--Dump new file
+!
+               WRITE (7) udist, umass, utime, &
+                    npart, n1, n2, gt, gamma, rhozero, RK21, &
+                    (h(i), i=1, npart), escap, tkin, tgrav, tterm, &
+                    (x(i), i=1, npart), (y(i), i=1, npart), &
+                    (z(i), i=1, npart), (vx(i), i=1, npart), &
+                    (vy(i), i=1, npart), (vz(i), i=1, npart), &
+                    (u(i), i=1, npart), (pmass(i), i=1, npart), &
+                    (rho(i), i=1, npart), (dgrav(i), i=1, npart), &
+                    dtmax, (isteps(i), i=1, npart), &
+                    (iphase(i), i=1, npart), &
+                    nptmass,(listpm(i), i=1, nptmass), &
+                    (spinx(i),i=1,nptmass),(spiny(i),i=1,nptmass), &
+                    (spinz(i),i=1,nptmass), &
+                    (angaddx(i),i=1,nptmass), (angaddy(i),i=1,nptmass), &
+                    (angaddz(i),i=1,nptmass), &
+                    anglostx, anglosty, anglostz, &
+                    nreassign, naccrete, nkill, specang, ptmassin, &
+                    (spinadx(i),i=1,nptmass),(spinady(i),i=1,nptmass), &
+                    (spinadz(i),i=1,nptmass), &
+                    (torqt(i), i=1, npart), (torqg(i), i=1, npart), &
+                    (torqp(i), i=1, npart),(torqv(i), i=1, npart), &
+                    (torqc(i), i=1, npart)
+
+
+            ENDIF
+
+ 10      CONTINUE
+
+ 100     CLOSE (8)
+
+ 15   CONTINUE
+
+      CLOSE (7)
+
+      PRINT 2000, ofile, imo
+ 2000 FORMAT ('file ', A10, 'has been created and contains ', I3, &
+           ' images')
+
+      END SUBROUTINE extract

@@ -1,0 +1,202 @@
+      SUBROUTINE ghostp2(npart, x, y, z, vx, vy, vz, u, h)
+!************************************************************
+!                                                           *
+!  This subroutine computes the list of ghost particles for *
+!     treating the boundaries.                              *
+!                                                           *
+!************************************************************
+
+      use idims
+
+      use constants
+      use carac
+      use ghost
+      use densi
+      use rbnd
+      use diskbd
+      use logun
+      use debug
+      use phase
+      use kerne
+      use sphcom
+      use ptmass
+
+      implicit none
+
+      INTEGER :: npart, i, iinner, nptot, ntot
+      REAL(kind=DBL) :: x(idim), y(idim), z(idim)
+      REAL(kind=DBL) :: vx(idim), vy(idim), vz(idim), h(idim), u(idim)
+      REAL(kind=DBL) :: ang1, ang2, angr, delta, delta2, drmax, drmax2, &
+               drmin, drmin2, drref, dzmax, dzmin, hi, hi2, pmassi, &
+               r, r2, rcyl2, rmind2, rhoi, v2, vg, vxc, vyc, vzc, &
+               xc, yc, zc, ui, vxi, vyi, vzi, xi, yi, zi
+      CHARACTER(len=7) :: where='ghostp2'
+!
+!--Allow for tracing flow
+!
+      IF (itrace.EQ.'all') WRITE (iprint, 99001)
+99001 FORMAT (' entry subroutine ghostp2')
+
+      nghost = 0
+      iinner = 0
+
+!
+!--If ibound = 2 then we have cylindrical boundaries
+!--now find ghost for cylindrical boundaries
+!
+      rmind2 = rmind*rmind
+      IF (isphcom.NE.0) THEN
+!-- Don't use the outer boundary for disks in binary systems
+         rcyl2 = 9.99e19
+         xc = x(isphcom)
+         yc = y(isphcom)
+         zc = z(isphcom)
+         vxc = vx(isphcom)
+         vyc = vy(isphcom)
+         vzc = vz(isphcom)
+      ELSE
+         rcyl2 = rcyl * rcyl
+         xc = 0.0
+         yc = 0.0
+         zc = 0.0
+         vxc = 0.0
+         vyc = 0.0
+         vzc = 0.0
+      ENDIF
+
+      DO 300 i = 1, npart
+         hasghost(i) = 0
+         IF (iphase(i).NE.0) GOTO 300
+         xi = x(i)-xc
+         yi = y(i)-yc
+         zi = z(i)-zc
+
+         vxi = vx(i)-vxc
+         vyi = vy(i)-vyc
+         vzi = vz(i)-vzc
+         r2 = xi*xi + yi*yi
+
+         hi = h(i)
+         pmassi = pmass(i)
+         rhoi = rho(i)
+         ui = u(i)
+         delta = 0.001*hi
+         hi2 = hi*hi
+         delta2 = delta*delta
+         drmin = SQRT(rcyl2) - radkernel*hi
+         drmin2 = drmin*drmin
+         drmax2 = rcyl2 + delta2 - 2*SQRT(rcyl2)*delta
+         IF (r2.GT.drmin2 .AND. r2.LT.drmax2 .OR. drmin.LT.0.) THEN
+            hasghost(i) = 1
+            nghost = nghost + 1
+            nptot = MIN0(npart + nghost, idim)
+            ireal(nptot) = i
+            r = SQRT(r2)
+            rg = 2*SQRT(rcyl2) - r
+            x(nptot) = xi*rg / r + xc
+            y(nptot) = yi*rg / r + yc
+            z(nptot) = zi + zc
+            v2 = vxi*vxi + vyi*vyi
+            vg = SQRT(v2)
+            ang1 = ATAN2(yi,xi)
+            ang2 = ATAN2(vyi,vxi)
+            angr = pi - ang2 + ang1
+            vx(nptot) = vg*COS(angr) + vxc
+            vy(nptot) = vg*SIN(angr) + vyc
+            vz(nptot) = vzi + vzc
+!-- For temporary use only!!
+!c            vx(nptot) = vxc
+!c            vy(nptot) = vyc
+!c            vz(nptot) = vzc
+
+            h(nptot) = hi
+            pmass(nptot) = pmassi
+            rho(nptot) = rhoi
+            u(nptot) = ui
+            iphase(nptot) = 0
+         ENDIF
+         IF (rmind.NE.0) THEN
+            drmax = rmind + radkernel*hi
+            drref = rmind - radkernel*hi
+            drmax2 = drmax*drmax
+            drmin2 = rmind2 + delta2 + 2*rmind*delta
+            IF (r2.GT.drmin2 .AND. r2.LT.drmax2 .AND. drref.GT.0.) THEN
+               hasghost(i) = 1
+               nghost = nghost + 1
+               iinner = iinner + 1
+               nptot = MIN0(npart + nghost, idim)
+               ireal(nptot) = i
+               r = SQRT(r2)
+               rg = 2*rmind - r
+               x(nptot) = xi*rg / r + xc
+               y(nptot) = yi*rg / r + yc
+               z(nptot) = zi + zc
+               v2 = vxi*vxi + vyi*vyi
+               vg = SQRT(v2)
+               ang1 = ATAN2(yi,xi)
+               ang2 = ATAN2(vyi,vxi)
+               angr = pi - ang2 + ang1
+               vx(nptot) = vg*COS(angr) + vxc
+               vy(nptot) = vg*SIN(angr) + vyc
+               vz(nptot) = vzi + vzc
+
+               h(nptot) = hi
+               pmass(nptot) = pmassi
+               rho(nptot) = rhoi
+               u(nptot) = ui
+               iphase(nptot) = 0
+            ENDIF
+         ENDIF
+!
+!--Z axis
+!
+         IF (isphcom.EQ.0) THEN
+            dzmin = (zi - zmin)/hi
+            IF (dzmin.GT.delta .AND. dzmin.LT.radkernel) THEN
+               hasghost(i) = 1
+               nghost = nghost + 1
+               nptot = MIN0(npart + nghost, idim)
+               ireal(nptot) = i
+               x(nptot) = xi
+               y(nptot) = yi
+               z(nptot) = zmin - dzmin*hi
+               vx(nptot) = vxi
+               vy(nptot) = vyi
+               vz(nptot) = -vzi
+               h(nptot) = hi
+               pmass(nptot) = pmassi
+               rho(nptot) = rhoi
+               u(nptot) = ui
+               iphase(nptot) = 0
+            ENDIF
+
+            dzmax = (zmax - zi)/hi
+            IF (dzmax.GT.delta .AND. dzmax.LT.radkernel) THEN
+               hasghost(i) = 1
+               nghost = nghost + 1
+               nptot = MIN0(npart + nghost, idim)
+               ireal(nptot) = i
+               x(nptot) = xi
+               y(nptot) = yi
+               z(nptot) = zmax + dzmax*hi
+               vx(nptot) = vxi
+               vy(nptot) = vyi
+               vz(nptot) = -vzi
+               h(nptot) = hi
+               pmass(nptot) = pmassi
+               rho(nptot) = rhoi
+               u(nptot) = ui
+               iphase(nptot) = 0
+            ENDIF
+         ENDIF
+
+ 300  CONTINUE
+
+      WRITE (iprint, *) 'npart, nghost', npart, nghost
+      ntot = npart + nghost
+      IF (iinner.NE.0) WRITE (iprint,99090) iinner
+99090 FORMAT(' adding ',I6,' inner ghosts')
+
+      IF (ntot.GT.idim) CALL error(where, ntot)
+
+      END SUBROUTINE ghostp2

@@ -1,0 +1,168 @@
+      MODULE zzhp
+
+      use idims
+
+      implicit none
+      save
+
+      REAL(DP) :: time0
+
+!---- Five subroutines are contained
+      CONTAINS
+
+!---- entry getdat
+      SUBROUTINE getdat(id, im, iy)
+!************************************************************
+!                                                           *
+!  This routine contains all machine dependant routines     *
+!                                                           *
+!************************************************************
+
+      use idims
+
+      use part
+      use ptmass
+      use recor
+
+      implicit none
+
+      CHARACTER(len=5) :: ZONE
+      CHARACTER(len=8) ::  DATE
+      CHARACTER(len=10) ::  TIME
+      INTEGER(I4B) :: VALUES(8)
+      INTEGER(I4B), intent(out) :: id, im, iy
+
+      LOGICAL :: ifirst=.true.
+!
+!--Get date
+!
+      CALL DATE_AND_TIME(DATE, TIME, ZONE, VALUES)
+      id = VALUES(3)
+      im = VALUES(2)
+      iy = VALUES(1)
+      IF (ifirst) THEN
+         ifirst = .FALSE.
+         time0 = VALUES(5)*3600.+VALUES(6)*60.+VALUES(7) &
+                +VALUES(8)*0.001
+      ENDIF
+
+      END SUBROUTINE getdat
+
+!---- entry getime
+      SUBROUTINE getime(ih, im, is, fhour)
+!************************************************************
+!                                                           *
+!  This routine contains all machine dependant routines     *
+!                                                           *
+!************************************************************
+
+      use idims
+
+      use part
+      use ptmass
+      use recor
+
+      implicit none
+
+      CHARACTER(len=5) :: ZONE
+      CHARACTER(len=8) ::  DATE
+      CHARACTER(len=10) ::  TIME
+      INTEGER(I4B) :: VALUES(8)
+      INTEGER(I4B), intent(out) :: ih, im, is
+      REAL(DP), intent(out) :: fhour
+!
+!--Get time
+!
+      CALL DATE_AND_TIME(DATE, TIME, ZONE, VALUES)
+      ih = VALUES(5)
+      im = VALUES(6)
+      is = VALUES(7)
+      fhour = ih + im/60. + is/3600.
+
+      END SUBROUTINE getime
+
+!---- entry statfile
+      SUBROUTINE statfile(file, ifsize)
+!************************************************************
+!                                                           *
+!  This routine contains all machine dependant routines     *
+!                                                           *
+!************************************************************
+
+      use idims
+
+      use part
+      use ptmass
+      use recor
+
+      implicit none
+
+      INTEGER(I4B), intent(out) :: ifsize
+      CHARACTER(len=7), intent(in) :: file
+!
+!--Check for file status
+!
+!---- lstat can't be linked for the 64-bit mode
+!!      ifile = lstat(file, istatb)
+!!      ifsize = istatb(6)
+!---- Change the following equation if you changed the dump format
+!     For REAL*4 simualtions
+!!      ifsize = irec*4*(27+18*npart+10*nptmass)
+!     For REAL*8 simulations
+      ifsize = irec*4*(34+7+36*npart+19*nptmass)
+
+      END SUBROUTINE statfile
+
+!---- entry getused
+      SUBROUTINE getused(tused)
+!************************************************************
+!                                                           *
+!  This routine contains all machine dependant routines     *
+!                                                           *
+!************************************************************
+
+      use idims
+
+      use part
+      use ptmass
+      use recor
+
+      implicit none
+
+      CHARACTER(len=5) :: ZONE
+      CHARACTER(len=8) ::  DATE
+      CHARACTER(len=10) ::  TIME
+      INTEGER(I4B) :: VALUES(8)
+      REAL(DP), intent(out) :: tused
+!
+!--Get time used since begining
+!
+      CALL DATE_AND_TIME(DATE, TIME, ZONE, VALUES)
+
+      tused = VALUES(5)*3600.+VALUES(6)*60.+VALUES(7) &
+             +VALUES(8)*0.001 - time0
+
+      END SUBROUTINE getused
+
+!---- entry getcom
+      SUBROUTINE getcom(job, inname)
+!************************************************************
+!                                                           *
+!  This routine contains all machine dependant routines     *
+!                                                           *
+!************************************************************
+
+      use mpi_mod
+      implicit none
+
+      CHARACTER(len=11), intent(out) :: job, inname
+!
+!--Get argument on command line
+!
+      CALL getarg(1,job)
+      CALL getarg(2,inname)
+      IF (myrank.eq.0) WRITE (*,*) 'Job: ', job, inname
+
+      END SUBROUTINE getcom
+
+      END MODULE zzhp

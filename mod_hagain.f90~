@@ -1,0 +1,8 @@
+      MODULE hagain
+
+      implicit none
+      save
+
+      INTEGER(I4B) :: iagain, nfullts, ntype
+
+      END MODULE hagain

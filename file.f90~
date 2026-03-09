@@ -1,0 +1,127 @@
+      SUBROUTINE file 
+!************************************************************           
+!                                                           *           
+!  This subroutine handles the files. A new file is         *           
+!     created if the size of the current file gets too      *           
+!     large.                                                *           
+!                                                           *           
+!************************************************************           
+                                                                        
+      use mpi_mod 
+      use idims
+
+      use logun
+      use files
+      use recor
+      use actio
+      use part
+      use ptmass
+      use zzhp
+
+      implicit none
+
+      INTEGER(I4B) :: eachdump, iadd, ifsize, inum
+      INTEGER(I4B) :: inum1, inum2, inum3
+      INTEGER(I4B), parameter :: maxsize=1000000000
+      LOGICAL :: ifirst=.TRUE.
+      CHARACTER(len=5) :: name
+      CHARACTER(len=1), dimension(0:9) :: cnum=(/ '0','1','2','3', &
+          '4','5','6','7','8','9' /)
+                                                                        
+!---- Set eachdump to data size for each dump (by wdump.f)              
+      eachdump = 4*(34+7+36*npart+19*nptmass) 
+      IF (ifirst) THEN 
+         ifirst = .FALSE. 
+         IF (eachdump >= maxsize) RETURN
+      ENDIF 
+!                                                                       
+!---- Check for file status                                                
+!                                                                       
+      inquire(idisk1, size=ifsize)
+!                                                                       
+!---- If smaller than maxsize return                                       
+!                                                                       
+      IF (ifsize <  maxsize) RETURN
+!                                                                       
+!---- If not create new file and close old                                 
+!                                                                       
+      IF (myrank.eq.0) CLOSE(idisk1) 
+
+      IF ((file1(5:5) .GE. '0') .AND. (file1(5:5) .LE. '9') ) THEN 
+!!         READ (file1, 99403) name(1:4), inum 
+99403    FORMAT (A4, I3) 
+         name(1:4) = file1(1:4)
+         inum1 = IACHAR(file1(5:5))-IACHAR('0')
+         inum2 = IACHAR(file1(6:6))-IACHAR('0')
+         inum3 = IACHAR(file1(7:7))-IACHAR('0')
+         inum = inum1*100+inum2*10+inum3
+
+         inum = inum+1 
+         iadd = 0 
+         IF (myrank.eq.0) then 
+            IF (inum.LE.9) THEN 
+!!               WRITE (file1, 99411) name(1:4), iadd, iadd, inum 
+99411          FORMAT (A4, I1, I1, I1) 
+               inum1 = iadd
+               inum2 = iadd
+               inum3 = inum
+            ELSEIF (inum.LE.99) THEN 
+!!               WRITE (file1, 99412) name(1:4), iadd, inum 
+99412          FORMAT (A4, I1, I2) 
+               inum1 = iadd
+               inum2 = (inum-MOD(inum,10))/10
+               inum3 = inum-inum2*10
+            ELSE 
+!!               WRITE (file1, 99403) name(1:4), inum 
+               inum1 = (inum-MOD(inum,100))/100
+               inum2 = (MOD(inum,100)-MOD(MOD(inum,100),10))/10
+               inum3 = inum-inum1*100-inum2*10
+            ENDIF 
+            file1 = name(1:4)//cnum(inum1)//cnum(inum2)//cnum(inum3)
+         ENDIF 
+      ELSE 
+!!         READ (file1, 99502) name5, inum 
+99502    FORMAT (A5, I2) 
+         name = file1(1:5)
+         inum2 = IACHAR(file1(6:6))-IACHAR('0')
+         inum3 = IACHAR(file1(7:7))-IACHAR('0')
+         inum = inum2*10+inum3
+
+         inum = inum+1 
+         iadd = 0 
+         IF (myrank.eq.0) THEN
+            IF (inum.LE.9) THEN 
+!!               WRITE (file1, 99511) name5, iadd, inum 
+99511          FORMAT (A5, I1, I1) 
+               inum2 = iadd
+               inum3 = inum
+            ELSE 
+!!               WRITE (file1, 99502) name5, inum 
+               inum2 = (inum-MOD(inum,10))/10
+               inum3 = inum-inum2*10
+            ENDIF
+            file1 = name//cnum(inum2)//cnum(inum3)
+         ENDIF 
+      ENDIF 
+                                                                        
+!!      OPEN(idisk1, FILE=file1, FORM='unformatted', RECL=imaxrec)     
+      OPEN(idisk1, FILE=file1, FORM='unformatted') 
+!                                                                       
+!---- Write witness on listing                                             
+!                                                                       
+      IF (myrank.eq.0) then 
+         WRITE (iprint, 99003) 
+99003    FORMAT (/) 
+         WRITE (iprint, 99004) 
+99004    FORMAT (' ------------------------------------------------') 
+         WRITE (iprint, 99005) file1 
+99005    FORMAT (' ------------ file ', A7, ' created --------------') 
+         WRITE (iprint, 99004) 
+         WRITE (iprint, 99003) 
+      ENDIF 
+!                                                                       
+!---- Reset dump counter                                                   
+!                                                                       
+      irec = 0
+
+      END SUBROUTINE file                           

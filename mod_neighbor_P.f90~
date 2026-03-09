@@ -1,0 +1,19 @@
+      MODULE neighbor
+
+      use idims
+      implicit none
+      save
+
+!---- neighber_P
+!!      INTEGER(I4B) :: neighb(nlmax,idim)
+      INTEGER(I4B), allocatable, dimension (:,:) :: neighb
+!---- neigh
+      INTEGER(I4B) :: ilen(idim), ilenlist
+!---- nearmpt
+      INTEGER(I4B) :: nearpt(iptdim,iptneigh), nptlist(iptdim)
+!---- nlim
+      INTEGER(I4B) :: neimin, neimax, nneigh(idim), &
+              nrange, internum,	nneightot
+      REAL(DP) :: hmax(idim)
+
+      END MODULE neighbor
