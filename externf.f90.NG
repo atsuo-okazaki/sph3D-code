@@ -12,18 +12,6 @@
 !        (6) Distant point mass                             *
 !        (7) Antigravity for stellar winds                  *
 !        (8) Radiative inhibition of stellar winds          *
-!           For (7) and (8), wind particles (iantigr/=0) get Newtonian
-!           gravity from point masses in forcei (gravx,y,z). This block
-!           adds a correction +xantigr*xmasj*r_hat per mass j so that the
-!           net radial term from j is (-1+xantigr)*xmasj*r_hat.
-!           Intended use:
-!             - j = ibelong(ipart) ("own" star): xantigr = xantgrav(j)*akappa
-!               so line driving reduces effective gravity from that star.
-!             - j /= ibelong ("other" star):
-!                 iexf=7 : xantigr = 0  -> full Newtonian gravity from the
-!                          companion; companion radiation is NOT applied here.
-!                 iexf=8 : xantigr = xantgrav(j)*akappa(ipart) -> companion
-!                          (and blended akappa) included in the correction.
 !                                                           *
 !************************************************************
 
@@ -222,20 +210,14 @@
 !c               gravzi = gravzi - xmasj*runiz
 !c               poteni = poteni + phi*pmassj
 
-!---- Antigravity / radiative correction (see header comments above)
+!---- Antigravity
                IF (iexf.EQ.7) THEN
                   IF (ibelong(ipart).EQ.j) THEN
-!----                Wind from star j: apply line-driving factor to *own* star.
                      xantigr = xantgrav(j)*akappa(ipart)
                   ELSE
-!----                Other star: no extra term here; Newtonian gravity from
-!                     that star comes only from gravx,y,z in forcei (iexf=7
-!                     does not apply the companion's radiation field here).
-                     xantigr = 0.0d0
+                     xantigr = 1.0d0
                   ENDIF
                ELSE
-!----             iexf=8: radiative inhibition uses xantgrav and akappa
-!                  (including blend from both winds in densityi_P) for each j.
                   xantigr = xantgrav(j)*akappa(ipart)
                ENDIF
                fx(ipart) = fx(ipart) + xantigr*xmasj*runix
