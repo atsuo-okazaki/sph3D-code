@@ -190,17 +190,21 @@
                      ELSE
                         costheta = 2.0*(ran1(1)-0.5)
                      ENDIF
-                     IF (igeom == 9) THEn
+                     IF (igeom == 9) THEN
                         den1 = 1.0_DP
                      ELSE
 !----                   The following random number genaration is 
 !                       for setting the particle injection rate 
-!                       proportional to 1-(rot param)*sin(theta)**2.
+!                       proportional to 1-(rot param)**2*sin(theta)**2.
 !                       This is to take into account the effect of
 !                       gravity darkening due to rapid stellar totation.
-!                       (26 Oct. 2023)
-!!                        den1 = SQRT(1.0_DP - vrotx*(1.0_DP-costheta**2))
-                        den1 = 1.0_DP - vrotx*(1.0_DP-costheta**2)
+!                       (26 Oct. 2023).
+                        ! The following line had a serious bug. 
+                        ! SQRT(1.0_DP - vrotx*(1.0_DP-costheta**2)) was used
+                        ! instead of 1.0_DP - vrotx*vrotx*(1.0_DP-costheta**2).
+                        ! This was corrected on 29 May 2026.
+                        !!den1 = SQRT(1.0_DP - vrotx*(1.0_DP-costheta**2))
+                        den1 = 1.0_DP - vrotx*vrotx*(1.0_DP-costheta**2)
                      END IF
                      rnd = ran1(1)
                      IF (rnd <= den1 .AND. &
@@ -237,11 +241,11 @@
                         vy1 = vwindx*y1/r1 + vrotx*vk0*sintheta*x1/r1_xy
                         vz1 = vwindx*z1/r1
                      ELSE
-                        vx1 = vwindx*SQRT(1.0_DP-vrotx*sintheta*sintheta)*x1/r1 &
+                        vx1 = vwindx*SQRT(1.0_DP-vrotx*vrotx*sintheta*sintheta)*x1/r1 &
                               - vrotx*vk0*sintheta*y1/r1_xy
-                        vy1 = vwindx*SQRT(1.0_DP-vrotx*sintheta*sintheta)*y1/r1 &
+                        vy1 = vwindx*SQRT(1.0_DP-vrotx*vrotx*sintheta*sintheta)*y1/r1 &
                               + vrotx*vk0*sintheta*x1/r1_xy
-                        vz1 = vwindx*SQRT(1.0_DP-vrotx*sintheta*sintheta)*z1/r1
+                        vz1 = vwindx*SQRT(1.0_DP-vrotx*vrotx*sintheta*sintheta)*z1/r1
                      END iF
                   END iF
                ELSE IF (inject == 'uniform') THEN
