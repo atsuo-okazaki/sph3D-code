@@ -90,6 +90,7 @@
                 yiold, yj1, ytemp, ziold, zj1, ztemp, &
                 vx1, vy1, vz1, wptj
       CHARACTER(len=7) :: where='accrete'
+      LOGICAL :: create_candidate
 
 !!    LOGICAL ifirst
 !!    DATA ifirst/.true./
@@ -119,7 +120,13 @@
 !
 !--CREATION OF NEW POINT MASS, by accretion of particles to form it
 !
-      IF (icreate.EQ.1 .AND. iremove(irhonex).EQ.0) THEN
+      create_candidate = .FALSE.
+      IF (icreate.EQ.1) THEN
+         IF (irhonex.GE.1 .AND. irhonex.LE.npart+nghost) THEN
+            create_candidate = iremove(irhonex).EQ.0
+         ENDIF
+      ENDIF
+      IF (create_candidate) THEN
 !
 !--Test before creating a new point mass:
 !
@@ -730,6 +737,7 @@
                vtan2 = divvr2 - vrad2
                specangmom2 = vtan2*r2
                specangmomhacc2 = pmassi*hacccur
+               pmassjn = pmass(j)
 !
 !--Check which point mass the particle is MOST bound to (6/8/94)
 !

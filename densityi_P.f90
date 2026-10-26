@@ -75,7 +75,7 @@
                  vxnl, vyi, vyipt, vynl, vzi, vzipt, vznl, weight, &
                  wtij, xi, xii, xip, xipt, yi, yii, yip, yipt, &
                  zi, zii, zip, zipt
-      LOGICAL :: ioutside(idim)
+      LOGICAL :: ioutside(idim), near_phase4
 
       IF (itrace.EQ.'all') WRITE (iprint, 99001)
 99001 FORMAT ('entry subroutine densityi')
@@ -104,6 +104,7 @@
 !$OMP private(divvi,curlvxi,curlvyi,curlvzi) &
 !$OMP private(numneigh1i,numneigh2i,rho1i,rho2i) &
 !$OMP private(iptn,iptcur,xipt,yipt,zipt,vxipt,vyipt,vzipt) &
+!$OMP private(near_phase4) &
 !$OMP private(xip,yip,zip,nlocalneigh) &
 !$OMP private(pmassj,hmean,hmean21,hmean31,hmean41) &
 !$OMP private(dx,dy,dz,dvx,dvy,dvz,rij2,rij1,v2) &
@@ -178,12 +179,14 @@
          curlvzi = 0.
 
          iptn = isnearpt(ipart)
+         near_phase4 = .FALSE.
 !
 !--No corrections if a neighbour of 2 point masses or more
 !
          IF (iptn.GT.0) THEN
             iptcur = listpm(iptn)
             IF (iphase(iptcur).EQ.4) THEN
+               near_phase4 = .TRUE.
                xipt = x(iptcur)
                yipt = y(iptcur)
                zipt = z(iptcur)
@@ -201,7 +204,7 @@
             j = neighb(k,ipart)
             hj = h(j)
 
-            IF (iptn.GT.0 .AND. iphase(iptcur).EQ.4) THEN
+            IF (near_phase4) THEN
 !
 !--Find distance and list of all neighbours on the same side
 !     of the point mass (not other point masses) and outside hacc
@@ -292,7 +295,7 @@
                IF (iexf.EQ.8 .AND. ibelong(j).EQ.2) THEN
                   rhoip2 = rhoip2 + pmassj*wtij
                ENDIF
-               IF (iptn.GT.0 .AND. iphase(iptcur).EQ.4) THEN
+               IF (near_phase4) THEN
                   coordi = xip*dx + yip*dy + zip*dz
                   IF (coordi.LT.0) THEN
                      numneigh2i = numneigh2i + 1
@@ -386,7 +389,7 @@
             ENDIF
          ENDIF
 
-         IF (iptn.GT.0 .AND. iphase(iptcur).EQ.4) THEN
+         IF (near_phase4) THEN
 !
 !--Compute densities, and pressure gradients for the neighbours of a
 !     point mass using a linear fit from each particle's neighbours

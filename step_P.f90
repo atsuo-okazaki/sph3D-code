@@ -82,9 +82,10 @@
              nneightotsave, internumsave, iresume, ii, j1, nnew, &
              neighmean, iokay, ivalue, ichkloop, numneigh, &
              ipt1, ipt2, ipart
-      REAL(DP) :: gravx1(idim), gravy1(idim)
-      REAL(DP) :: gradpx1(idim), gradpy1(idim)
-      REAL(DP) :: artvix1(idim), artviy1(idim)
+!---- Previous-force components must persist across calls to step.
+      REAL(DP), SAVE :: gravx1(idim), gravy1(idim)
+      REAL(DP), SAVE :: gradpx1(idim), gradpy1(idim)
+      REAL(DP), SAVE :: artvix1(idim), artviy1(idim)
       REAL(DP), parameter :: small=1.0E-04, rhosmall=1.0E-05
       REAL(DP) :: dt, xlog2, f21, f22, deltat, dtfull, &
              dtf21, dtf22, xold, yold, zold, delvx, delvy, delvz, &
@@ -1579,6 +1580,15 @@
                endif
                DO j = 1, nlst0
                   i = llist(j)
+!----             Initialize the previous-force components for a newly
+!                 injected particle.  These local arrays are otherwise
+!                 undefined until the particle completes its first step.
+                  gravx1(i) = gravx(i)
+                  gravy1(i) = gravy(i)
+                  gradpx1(i) = gradpx(i)
+                  gradpy1(i) = gradpy(i)
+                  artvix1(i) = artvix(i)
+                  artviy1(i) = artviy(i)
                   if(myrank.eq.0)then
                   WRITE (ireasspr) i,x(i),y(i),z(i),vx(i),vy(i), &
                        vz(i),h(i),u(i),poten(i)

@@ -145,7 +145,9 @@
       iremove = -1
       DO i = 1, nlst0
          j = llist(i)
-         IF (iphase(j) == 0 .AND. j <= npart) iremove(j) = 0
+         IF (j >= 1 .AND. j <= npart) THEN
+            IF (iphase(j) == 0) iremove(j) = 0
+         ENDIF
       END DO
 !
 !--   Check individual particles at the current timestep

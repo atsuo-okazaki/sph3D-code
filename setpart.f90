@@ -511,6 +511,7 @@
       rcyl = 0.
       rmin = 0.
       rmind = 0.
+      faclod = 1.0_DP
       ichang = 1
 
  100  IF (igeom == 1)  THEN

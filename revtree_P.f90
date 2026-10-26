@@ -44,7 +44,8 @@
 !$OMP END DO
 !$OMP END PARALLEL
 
-      DO ilevel = 1, nlevel
+!---- level(nlevel) is the end sentinel written by mtree, not a tree level.
+      DO ilevel = 1, nlevel - 1
 
 !$OMP PARALLEL default(none) &
 !$OMP shared(ilevel,level,natom,rx,ry,rz,em,isib,idau) &
