@@ -115,6 +115,7 @@
             i1 = i-npart
             dummx(i1) = x(i) 
             dummy(i1) = y(i) 
+            dummz(i1) = z(i)
             dummvx(i1) = vx(i) 
             dummvy(i1) = vy(i) 
             dummvz(i1) = vz(i) 
@@ -254,6 +255,11 @@
                                                                         
          h (ip) = hc 
          pmass(ip) = pmassc 
+!----    h and dh/dt must be scaled by the same factor.  Keeping the
+!        parent's derivatives after reducing h gives the central child
+!        an inconsistent smoothing-length evolution.
+         f1h(ip) = f1hp*cr13
+         f2h(ip) = f2hp*cr13
                                                                         
          DO i = 2, nchild
             iadd = iadd+1
@@ -323,12 +329,12 @@
             f1vx(j) = f1vxp
             f1vy(j) = f1vyp
             f1vz(j) = f1vzp
-            f1h(j) = f1hp
+            f1h(j) = f1hp*cr13
             f1u(j) = f1up
             f2vx(j) = f2vxp
             f2vy(j) = f2vyp
             f2vz(j) = f2vzp
-            f2h(j) = f2hp
+            f2h(j) = f2hp*cr13
             f2u(j) = f2up
             dum2vx(j) = dum2vxp
             dum2vy(j) = dum2vyp
@@ -358,11 +364,11 @@
          DO i=1,nghost
             i1 = npart+nadd+i
             x(i1) = dummx(i)
-            y(i1) = dummx(i)
-            z(i1) = dummy(i)
-            vx(i1) = dummz(i)
-            vy(i1) = dummvx(i)
-            vz(i1) = dummvy(i)
+            y(i1) = dummy(i)
+            z(i1) = dummz(i)
+            vx(i1) = dummvx(i)
+            vy(i1) = dummvy(i)
+            vz(i1) = dummvz(i)
             rho(i1) = dummrho(i)
             u(i1) = dummu(i)
             h(i1) = dummh(i)

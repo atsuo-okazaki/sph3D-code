@@ -203,7 +203,7 @@
          pdvi = 0.
          dqi = 0.
 
-         rhoi = trho(ipart)
+         rhoi = MAX(trho(ipart), tiny)
          IF (iphase(ipart).GE.1) THEN
             pro2i = 0.0
          ELSE
@@ -237,6 +237,7 @@
 !
          DO 70 k = 1, ilen(ipart)
             j = neighb(k,ipart)
+            IF (j.LT.1 .OR. j.GT.npart) GOTO 70
 
             IF (iphase(j).GE.1) GOTO 70
 
@@ -355,7 +356,7 @@
             IF(iphase(ipart).GE.1 .OR. iphase(j).GE.1) GOTO 70
 
             IF (v.LT.radkernel) THEN
-               rhoj = trho(j)
+               rhoj = MAX(trho(j), tiny)
                robar = 0.5*(rhoi + rhoj)
 !
 !--Get kernel quantities from interpolation in table

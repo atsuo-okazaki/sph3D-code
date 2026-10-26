@@ -89,7 +89,7 @@
 
 !$OMP PARALLEL default(none) &
 !$OMP shared(nlst_in,nlst_end,list,divv,curlvx,curlvy,curlvz,curlv) &
-!$OMP shared(hmax,h,x,y,z,vx,vy,vz,u,pr,vsound,pmass,rho) &
+!$OMP shared(hmax,h,x,y,z,vx,vy,vz,u,pr,vsound,pmass,rho,npart) &
 !$OMP shared(ilen,neighb,iscurrent,selfnormkernel) &
 !$OMP shared(cnormk,radkernel,dvtable,wij,grwij) &
 !$OMP shared(temprho,numneigh1,numneigh2,rho1,rho2) &
@@ -202,6 +202,7 @@
 
          DO 40 k = 1, ilen(ipart)
             j = neighb(k,ipart)
+            IF (j.LT.1 .OR. j.GT.npart) GOTO 40
             hj = h(j)
 
             IF (near_phase4) THEN
@@ -368,9 +369,10 @@
                              /SQRT((xi-x(iptm))*(xi-x(iptm)) &
                              +(yi-y(iptm))*(yi-y(iptm)) &
                              +(zi-z(iptm))*(zi-z(iptm)))
+                     ddinv = MIN(ddinv, 1.0d0)
                      akapp(iptm) = akappac(iptm) &
                           +akappar(iptm) &
-                          *(1.0d0-ddinv) &
+                          *(MAX(1.0d0-ddinv, 0.0d0)) &
                           **(2.0d0*vbeta(iptm)-1.0d0)
                   ELSE
                      akapp(iptm) = akappac(iptm)
@@ -598,6 +600,8 @@
          rho1(ipart) = cnormk*rho1(ipart)
          rho2(ipart) = cnormk*rho2(ipart)
          divv(ipart) = cnormk*divv(ipart)
+         IF (divv(ipart).NE.divv(ipart)) divv(ipart) = 0.
+         IF (ABS(divv(ipart)).GT.1.d8) divv(ipart) = SIGN(1.d8, divv(ipart))
          curlv(ipart) = cnormk* &
               SQRT(curlvx(ipart)**2+curlvy(ipart)**2+curlvz(ipart)**2)
 

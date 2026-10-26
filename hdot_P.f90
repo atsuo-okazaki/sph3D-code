@@ -68,6 +68,15 @@
          dhi = (wiex1 * dhi + wiex2 * dhl) / (wiex1 + wiex2)
       END IF
 
+!--Do not allow the hydrodynamic estimate to change h by more than
+!  five percent during one maximum timestep.  Previously dhl/dhs
+!  limited h only when the neighbour count was close to (or outside)
+!  its allowed range.  A transient small rho or large divv could
+!  therefore produce an arbitrarily large positive dhi for an otherwise
+!  acceptable neighbour count; split particles are particularly prone
+!  to this immediately after their creation.
+      dhi = MAX(dhs, MIN(dhi, dhl))
+
       dh(ipart) = dhi
 
  200  hnewg = h(ipart) + dh(ipart)*dt

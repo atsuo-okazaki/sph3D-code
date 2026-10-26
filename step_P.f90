@@ -81,7 +81,7 @@
              injfrq, nlsts1, nlsts2, nlsts3, ilenlistsave, &
              nneightotsave, internumsave, iresume, ii, j1, nnew, &
              neighmean, iokay, ivalue, ichkloop, numneigh, &
-             ipt1, ipt2, ipart
+             ipt1, ipt2, ipart, ipm
 !---- Previous-force components must persist across calls to step.
       REAL(DP), SAVE :: gravx1(idim), gravy1(idim)
       REAL(DP), SAVE :: gradpx1(idim), gradpy1(idim)
@@ -362,6 +362,17 @@
             IF (dumh(j).GT.hmaximum) dumh(j) = hmaximum
          END DO
 !$OMP END PARALLEL DO
+      ELSEIF (deadbound.GT.tiny) THEN
+!----    With hmaximum unset, deadbound is the natural finite search
+!        scale.  Apply it before building the tree so a bad predictor
+!        cannot make every particle a neighbour.
+!$OMP PARALLEL DO SCHEDULE(runtime) default(none) &
+!$OMP shared(npart,nghost,deadbound,dumh) &
+!$OMP private(j)
+         DO j = 1, npart + nghost
+            IF (dumh(j).GT.deadbound) dumh(j) = deadbound
+         END DO
+!$OMP END PARALLEL DO
       ENDIF
 !
 !--Make the tree or update the tree
@@ -442,7 +453,7 @@
 !$OMP shared(gravx,gravy,gradpx,gradpy,artvix,artviy,gravx1,gravy1) &
 !$OMP shared(gradpx1,gradpy1,artvix1,artviy1,torqt,torqg,torqp) &
 !$OMP shared(torqv,torqc,it0,itime,imaxdens,cnormk) &
-!$OMP shared(nneigh,hmaximum,iphase,nptmass,listpm) &
+!$OMP shared(nneigh,hmaximum,deadbound,iphase,nptmass,listpm) &
 !$OMP shared(xmomsyn,ymomsyn,zmomsyn,pmass) &
 !$OMP shared(encal) &
 !$OMP private(i,j,dtfull,dtf21,dtf22,xold,yold,delvx,delvy,delvz) &
@@ -566,6 +577,11 @@
             IF (hmaximum.GT.0.0) THEN
                IF (h(i).GT.hmaximum) THEN
                   h(i) = hmaximum
+                  ioutmax = ioutmax + 1
+               END IF
+            ELSEIF (deadbound.GT.tiny) THEN
+               IF (h(i).GT.deadbound) THEN
+                  h(i) = deadbound
                   ioutmax = ioutmax + 1
                END IF
             END IF
@@ -736,6 +752,14 @@
             IF (dumh(j).GT.hmaximum) dumh(j) = hmaximum
          END DO
 !$OMP END PARALLEL DO
+      ELSEIF (deadbound.GT.tiny) THEN
+!$OMP PARALLEL DO SCHEDULE(runtime) default(none) &
+!$OMP shared(npart,nghost,deadbound,dumh) &
+!$OMP private(j)
+         DO j = 1, npart + nghost
+            IF (dumh(j).GT.deadbound) dumh(j) = deadbound
+         END DO
+!$OMP END PARALLEL DO
       ENDIF
 !
 !--Total number of particles to compute forces on
@@ -882,7 +906,7 @@
                   r2 = x(i)**2 + y(i)**2 + z(i)**2
                ENDIF
 !!               IF (r2.GT.(1.05*deadbound)**2) THEN
-               IF ((iphase(i).EQ.0) .AND. &
+               IF ((iphase(i).EQ.0) .AND. deadbound.GT.tiny .AND. &
                   (r2.GT.(1.05*deadbound)**2)) THEN
                   iphase(i) = -1
                   pmassi = pmass(i)
@@ -1358,6 +1382,26 @@
                internumsave = internum
                nlst = nlst0
 
+!
+!--Repair point-mass velocities before phoenix (injection adds v_star).
+!
+               DO ipm = 1, nptmass
+                  i = listpm(ipm)
+                  IF (vx(i).NE.vx(i)) THEN
+                     IF (dumvx(i).EQ.dumvx(i)) THEN
+                        vx(i) = dumvx(i)
+                        vy(i) = dumvy(i)
+                        vz(i) = dumvz(i)
+                     ELSE
+                        vx(i) = 0.
+                        vy(i) = 0.
+                        vz(i) = 0.
+                     ENDIF
+                     IF (myrank.eq.0) WRITE (iprint,*) &
+                        'WARNING: repaired NaN pt mass vel ',i
+                  ENDIF
+               END DO
+
                iresume = nptmass+1
                ii = 0
                DO i = 1, nlst0
@@ -1478,91 +1522,54 @@
                      numneigh = nlist
                   ENDIF
 
-!!                  IF (numneigh.GT.1) THEN
-!!                     h(i) = (h(i)/
-!!     &                 (DBLE(numneigh)/DBLE(neighmean))**(1.0/3.0) +
-!!     &                 ivalue*h(i))/(ivalue + 1)
-!!                  ELSE
-!!                     h(i) = h(i)*2.0
-!!                  ENDIF
-!!                  dumh(i) = h(i)
-!!                  IF (igrape.EQ.1) hmax(i) = h(i)
-!!                  IF (ichkloop.GT.10) THEN
-!!                     ivalue = 2
-!!                     IF (ichkloop.GT.20) ivalue = 4
-!!                     IF (ichkloop.GT.30) ivalue = 8
-!!                  ENDIF
-!!                  IF (ichkloop.GT.500) CALL error(where,2)
-!!
-!!                  IF (numneigh.GT.(neimax - nrange) .OR.
-!!     &                 numneigh.LT.(neimin + nrange)) GOTO 2000
-!----             The above algorithm was replaced with the following
-!                 one (A. Okazaki, 02/09/2007)
-                  IF ((numneigh.LE.neimax - nrange) .AND. &
-                      (numneigh.GE.neimin + nrange)) THEN
-                     dumh(i) = h(i)
-                     IF (igrape.EQ.1) hmax(i) = h(i)
+!--Power-law h update (fast); bisection (Okazaki 2007) often fails
+!--to converge within 500 iterations for wind-injected particles.
+                  IF (numneigh.GT.1) THEN
+                     h(i) = (h(i)/ &
+                       (DBLE(numneigh)/DBLE(neighmean))**(1.0/3.0) + &
+                       DBLE(ivalue)*h(i))/(DBLE(ivalue) + 1.0)
                   ELSE
-                     IF (numneigh.GT.neimax - nrange) THEN
-                        IF (ichkloop.EQ.1) THEN
-                           IF (hmaximum.GT.0.0) THEN
-                              hhigh = MIN(h(i), hmaximum)
-                              hlow = -9.999
-                              h(i) = MIN(0.5*h(i), hmaximum)
-                           ELSE
-                              hhigh = MIN(h(i), deadbound)
-                              hlow = -9.999
-                              h(i) = MIN(0.5*h(i), deadbound)
-                           ENDIF
-                        ELSE
-                           IF (hmaximum.GT.0.0) THEN
-                              hhigh = MIN(h(i), hmaximum)
-                           ELSE
-                              hhigh = MIN(h(i), deadbound)
-                           ENDIF
-                           IF (hlow.LT.0.0) THEN
-                              h(i) = 0.5*hhigh
-                           ELSE
-                              h(i) = 0.5*(hhigh+hlow)
-                           ENDIF
-                        ENDIF
-                        dumh(i) = h(i)
-                        IF (igrape.EQ.1) hmax(i) = h(i)
-                     ELSE
-                        IF (ichkloop.EQ.1) THEN
-                           hhigh = -9.999
-                           hlow = h(i)
-                           IF (hmaximum.GT.0.0) THEN
-                              h(i) = MIN(2.0*hlow, hmaximum)
-                           ELSE
-                              h(i) = MIN(2.0*hlow, deadbound)
-                           ENDIF
-                        ELSE
-                           hlow = h(i)
-                           IF (hhigh.LT.0.0) THEN
-                              IF (hmaximum.GT.0.0) THEN
-                                 h(i) = MIN(2.0*hlow, hmaximum)
-                              ELSE
-                                 h(i) = MIN(2.0*hlow, deadbound)
-                              ENDIF
-                           ELSE
-                              h(i) = 0.5*(hhigh+hlow)
-                           ENDIF
-                        ENDIF
-                        dumh(i) = h(i)
-                        IF (igrape.EQ.1) hmax(i) = h(i)
-                     ENDIF
-                     IF (h(i).LE.0.0 .OR. h(i).NE.hmaximum) THEN
-                        IF (h(i).GT.deadbound .OR. ichkloop.GT.500) THEN
-                           if(myrank.eq.0) &
-                           WRITE (iprint,*) ichkloop,': h(',i,')=',h(i), &
-                              ', numneigh=',numneigh
-                           CALL error(where,2)
-                        ELSE
-                           GOTO 2000
-                        ENDIF
-                     ENDIF
+                     h(i) = h(i)*2.0
                   ENDIF
+                  IF (hmaximum.GT.0.0) THEN
+                     h(i) = MIN(h(i), hmaximum)
+                  ELSEIF (deadbound.GT.tiny) THEN
+                     h(i) = MIN(h(i), deadbound)
+                  ENDIF
+                  h(i) = MAX(h(i), MAX(hmin, tiny))
+                  dumh(i) = h(i)
+                  IF (igrape.EQ.1) hmax(i) = h(i)
+
+                  IF (ichkloop.GT.100) THEN
+                     ivalue = 2
+                     IF (ichkloop.GT.200) ivalue = 4
+                     IF (ichkloop.GT.300) ivalue = 8
+                  ELSEIF (ichkloop.GT.10) THEN
+                     ivalue = 2
+                     IF (ichkloop.GT.20) ivalue = 4
+                     IF (ichkloop.GT.30) ivalue = 8
+                  ENDIF
+
+                  IF (h(i).LE.0.0_DP .OR. h(i).NE.h(i)) THEN
+                     if(myrank.eq.0) WRITE (iprint,*) &
+                        'bad h:', i, h(i), numneigh
+                     CALL error(where,2)
+                  ENDIF
+
+                  IF (ichkloop.GT.500) THEN
+                     IF (numneigh.LE.neimax .AND. numneigh.GE.neimin) THEN
+                        if(myrank.eq.0) WRITE (iprint,*) &
+                           'WARNING: accept h at iteration limit ',i, &
+                           h(i), numneigh
+                        CYCLE
+                     ENDIF
+                     if(myrank.eq.0) WRITE (iprint,*) ichkloop, &
+                        ': h(',i,')=',h(i),', numneigh=',numneigh
+                     CALL error(where,2)
+                  ENDIF
+
+                  IF (numneigh.GT.(neimax - nrange) .OR. &
+                      numneigh.LT.(neimin + nrange)) GOTO 2000
                END DO
 
                icall = 4
@@ -1702,6 +1709,23 @@
                nneightot = nneightot + nneigh(ipart)
             END DO
          ENDIF
+
+!
+!--Keep dum* in sync with integrated state at end of max timestep
+!--(Add/icall=4 can leave stale NaN predictions for the next step).
+!
+         DO i = 1, ntot
+            IF (iphase(i).GE.0) THEN
+               dumx(i) = x(i)
+               dumy(i) = y(i)
+               dumz(i) = z(i)
+               dumvx(i) = vx(i)
+               dumvy(i) = vy(i)
+               dumvz(i) = vz(i)
+               dumu(i) = u(i)
+               dumh(i) = h(i)
+            ENDIF
+         END DO
 
          RETURN
       ENDIF

@@ -210,9 +210,16 @@
             x(i) = x(i) + x(ipt)
             y(i) = y(i) + y(ipt)
             z(i) = z(i) + z(ipt)
-            vx(i) = vx(i) + vx(ipt)
-            vy(i) = vy(i) + vy(ipt)
-            vz(i) = vz(i) + vz(ipt)
+            IF (vx(ipt).EQ.vx(ipt) .AND. vy(ipt).EQ.vy(ipt) .AND. &
+                vz(ipt).EQ.vz(ipt)) THEN
+               vx(i) = vx(i) + vx(ipt)
+               vy(i) = vy(i) + vy(ipt)
+               vz(i) = vz(i) + vz(ipt)
+            ELSE
+               IF (myrank.eq.0) WRITE (iprint,*) &
+                  'WARNING phoenix: NaN pt mass vel ipt=',ipt, &
+                  ', particle ',i,'; wind velocity only'
+            ENDIF
          ENDIF
 
 !!         u(i) = u(i)
@@ -533,17 +540,31 @@
                x(i) = x(i) + x(ipt)
                y(i) = y(i) + y(ipt)
                z(i) = z(i) + z(ipt)
-               vx(i) = vx(i) + vx(ipt)
-               vy(i) = vy(i) + vy(ipt)
-               vz(i) = vz(i) + vz(ipt)
+               IF (vx(ipt).EQ.vx(ipt) .AND. vy(ipt).EQ.vy(ipt) .AND. &
+                   vz(ipt).EQ.vz(ipt)) THEN
+                  vx(i) = vx(i) + vx(ipt)
+                  vy(i) = vy(i) + vy(ipt)
+                  vz(i) = vz(i) + vz(ipt)
+               ELSE
+                  IF (myrank.eq.0) WRITE (iprint,*) &
+                     'WARNING phoenix: NaN pt mass vel ipt=',ipt, &
+                     ', particle ',i,'; wind velocity only'
+               ENDIF
             !ELSEIF (ipt == nptmass+1) THEN
             ELSEIF (ipt == 3) THEN
                x(i) = x(i) + x(isphcom)
                y(i) = y(i) + y(isphcom)
                z(i) = z(i) + z(isphcom)
-               vx(i) = vx(i) + vx(isphcom)
-               vy(i) = vy(i) + vy(isphcom)
-               vz(i) = vz(i) + vz(isphcom)
+               IF (vx(isphcom).EQ.vx(isphcom) .AND. &
+                   vy(isphcom).EQ.vy(isphcom) .AND. &
+                   vz(isphcom).EQ.vz(isphcom)) THEN
+                  vx(i) = vx(i) + vx(isphcom)
+                  vy(i) = vy(i) + vy(isphcom)
+                  vz(i) = vz(i) + vz(isphcom)
+               ELSE
+                  IF (myrank.eq.0) WRITE (iprint,*) &
+                     'WARNING phoenix: NaN isphcom vel; particle ',i
+               ENDIF
             ENDIF
          ENDIF
 
@@ -562,7 +583,7 @@
             hi1 = ((rshellx**3-rptmas(ipt)**3)*4.0*pi/3.0*areafrac &
                 /REAL(nshellx))**(1.0/3.0)
             hi2 = 0.5*deadbound/(DBLE(npart)**(1.0/3.0))
-            h(i) = MIN(hi1,hi2)
+            h(i) = MAX(MIN(hi1,hi2), tiny)
 !!            h(i) = ((rshellx**3-rptmas(ipt)**3)*4.0*pi/3.0*areafrac &
 !!               /REAL(nshellx))**(1.0/3.0)
             ibelong(i) = ipt
@@ -583,7 +604,7 @@
                      /nshell1(ipt))**(1.0/3.0)
             ENDIF
             hi2 = 0.5*deadbound/(DBLE(npart)**(1.0/3.0))
-            h(i) = MIN(hi1,hi2)
+            h(i) = MAX(MIN(hi1,hi2), tiny)
             !!            h(i) = hi1
             
 
@@ -674,6 +695,29 @@
          IF (myrank.eq.0) WRITE (iprint,*) 'ERROR in phoenix'
          IF (myrank.eq.0) WRITE (iprint,*) 'ibound =',ibound
          CALL quit
+      ENDIF
+
+      IF (vx(i).NE.vx(i) .OR. vy(i).NE.vy(i) .OR. vz(i).NE.vz(i)) THEN
+         IF (ipt.GT.0 .AND. ipt.LE.nptmass) THEN
+            r1 = MAX(0.5*(rptmas(ipt)+rshell1), tiny)
+            rxy = SQRT(x(i)**2 + y(i)**2)
+            IF (rxy.GT.tiny) THEN
+               vk0 = SQRT(MAX(pmass(ipt), tiny)/r1)
+               vx(i) = -vk0 * y(i) / rxy
+               vy(i) =  vk0 * x(i) / rxy
+               vz(i) = 0.
+            ELSE
+               vx(i) = 0.
+               vy(i) = 0.
+               vz(i) = 0.
+            ENDIF
+         ELSE
+            vx(i) = 0.
+            vy(i) = 0.
+            vz(i) = 0.
+         ENDIF
+         IF (myrank.eq.0) WRITE (iprint,*) &
+            'WARNING phoenix: salvaged NaN velocity for ',i
       ENDIF
 
       dumx(i) = x(i)
