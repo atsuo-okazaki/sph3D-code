@@ -78,7 +78,8 @@
               fm, phi, dphi, dfmassdx, dfptdx, dpotdh, xmasj, &
               xii, yii, zii, vpos, rhoj, robar, dgrwdx, grwtij, grpm, &
               poro2j, dvx, dvy, dvz, projv, vsbar, f, adivi, acurlvi, &
-              fi, adivj, acurlvj, fj, t12j, alphafac, ri1, ri2, &
+              fi, adivj, acurlvj, fj, t12j, alphafac, alphasphij, &
+              betasphij, ri1, ri2, &
               rj1, rj2, hcoeff, rangmx, hdiski, hdiskj, hfac, &
               vlowcorrection, qi, qj, pxtemp, pytemp, pztemp, &
               artxtemp, artytemp, artztemp, spinxtemp, spinytemp, spinztemp, &
@@ -127,7 +128,8 @@
 !$OMP private(phi,dphi,dfmassdx,dfptdx,dpotdh,xmasj,rhoj,robar) &
 !$OMP private(dgrwdx,grwtij,grpm,poro2j,dvx,dvy,dvz,projv,vsbar) &
 !$OMP private(f,adivi,acurlvi,fi,adivj,acurlvj,fj,t12j) &
-!$OMP private(alphafac,hfac,hcoeff,hdiski,hdiskj,ri1,ri2,rj1,rj2) &
+!$OMP private(alphafac,alphasphij,betasphij) &
+!$OMP private(hfac,hcoeff,hdiski,hdiskj,ri1,ri2,rj1,rj2) &
 !$OMP private(isphcom2,vlowcorrection,qi,qj,rangmx) &
 !$OMP private(iptn,iptcur,xipt,yipt,zipt,vxipt,vyipt,vzipt) &
 !$OMP private(xip,yip,zip,nlocalneigh,ii,iptcurv,xii,yii,zii,vpos) &
@@ -150,6 +152,8 @@
          artviz(ipart) = 0.
          pdv(ipart) = 0.
          dq(ipart) = 0.
+         alphasph(ipart) = 0.
+         betasph(ipart) = 0.
 !
 !--Derivative of smoothing length
 !
@@ -418,7 +422,11 @@
 !                       binaries. Never use it for misaligned systems.
 !                       (A. Okazaki, 01/23/2007)
                         alphafac = 0.1
-                        isphcom2 = 3-isphcom
+                        IF (nptmass.GE.2) THEN
+                           isphcom2 = 3-isphcom
+                        ELSE
+                           isphcom2 = isphcom
+                        ENDIF
                         ri1 = SQRT((xi-x(isphcom))*(xi-x(isphcom)) &
                                   +(yi-y(isphcom))*(yi-y(isphcom)) &
                                   +(zi-z(isphcom))*(zi-z(isphcom)))
@@ -440,7 +448,8 @@
                                         /pmass(isphcom))
                            rangmx = MAX(ABS(rangle(1)),ABS(rangle(2)), &
                                         ABS(rangle(3)))
-                           IF (iaccevol.EQ.'v' .OR. rangmx.NE.0.0) THEN
+                           IF (nptmass.LT.2 .OR. iaccevol.EQ.'v' &
+                               .OR. rangmx.NE.0.0) THEN
                               hdiski = hcoeff*ri1**1.5
                               hdiskj = hcoeff*rj1**1.5
                            ELSEIF (iaccevol.EQ.'f') THEN
@@ -455,7 +464,7 @@
                                                iaccevol
                               CALL quit
                            ENDIF
-                           alphasph = alpha/(alphafac*hmean &
+                           alphasphij = alpha/(alphafac*hmean &
                                           /(0.5*(hdiski+hdiskj)))
                         ELSE IF (encal.EQ.'p' .OR. encal.EQ.'a' &
                                 .OR. encal.EQ.'c') THEN
@@ -472,25 +481,36 @@
                            hfac = SQRT(1.0-EXP(-0.5*(gamma-1.0)))
                            hcoeff = 4.0*gamma/(3.0*(gamma-1.0)) &
                                     /pmass(isphcom)
-                           hdiski = hfac*SQRT(hcoeff*u(ipart)*ri1**3 &
-                                 /(1.0+pmass(isphcom2)/pmass(isphcom) &
-                                   *(ri1/ri2)**3) &
-                                +zi*zi)
-                           hdiskj = hfac*SQRT(hcoeff*u(j)*rj1**3 &
-                                 /(1.0+pmass(isphcom2)/pmass(isphcom) &
-                                   *(rj1/rj2)**3) &
-                                +z(j)*z(j))
-                           alphasph = alpha/(alphafac*hmean &
+                           IF (nptmass.LT.2) THEN
+                              hdiski = hfac*SQRT( &
+                                   hcoeff*u(ipart)*ri1**3+zi*zi)
+                              hdiskj = hfac*SQRT( &
+                                   hcoeff*u(j)*rj1**3+z(j)*z(j))
+                           ELSE
+                              hdiski = hfac*SQRT(hcoeff*u(ipart)*ri1**3 &
+                                    /(1.0+pmass(isphcom2)/pmass(isphcom) &
+                                      *(ri1/ri2)**3) &
+                                   +zi*zi)
+                              hdiskj = hfac*SQRT(hcoeff*u(j)*rj1**3 &
+                                    /(1.0+pmass(isphcom2)/pmass(isphcom) &
+                                      *(rj1/rj2)**3) &
+                                   +z(j)*z(j))
+                           ENDIF
+                           alphasphij = alpha/(alphafac*hmean &
                                           /(0.5*(hdiski+hdiskj)))
                         ENDIF
 
 !---- betasph=2*alphasph is adopted if beta given initially is not zero
                         IF (beta.NE.0.0) THEN
-                           betasph = 2.0*alphasph
+                           betasphij = 2.0*alphasphij
                         ELSE
-                           betasph = beta
+                           betasphij = beta
                         ENDIF
-                        t12j = grpm*f*(betasph*f - alphasph*vsbar) &
+!----                   Retain the most restrictive coefficient for the
+!                       particle's Courant condition.
+                        alphasph(ipart) = MAX(alphasph(ipart),alphasphij)
+                        betasph(ipart) = MAX(betasph(ipart),betasphij)
+                        t12j = grpm*f*(betasphij*f-alphasphij*vsbar) &
                                /robar
                      ELSE
                         t12j = grpm*f*(beta*f - alpha*vsbar)/robar

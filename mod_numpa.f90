@@ -6,7 +6,7 @@
 
 !---- numpa
       REAL(DP) :: alpha, beta 
-!---- numpass
-      REAL(DP) :: alphasph, betasph 
+!---- Per-particle artificial-viscosity coefficients for ifsvi=6
+      REAL(DP) :: alphasph(idim)=0.0_DP, betasph(idim)=0.0_DP
 
       END MODULE numpa

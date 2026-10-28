@@ -976,7 +976,7 @@
          IF (iphase(i).EQ.0) THEN
             divvi = divv(i)/rho(i)
             IF (ifsvi.EQ.6) THEN
-               aux1 = alphasph*vsound(i)
+               aux1 = alphasph(i)*vsound(i)
             ELSE
                aux1 = alpha*vsound(i)
             ENDIF
@@ -984,7 +984,7 @@
             aux3 = aux2
             IF (divvi.LT.0.0) THEN
                IF (ifsvi.EQ.6) THEN
-                  aux2 = betasph*aux2
+                  aux2 = betasph(i)*aux2
                ELSE
                   aux2 = beta*aux2
                ENDIF
