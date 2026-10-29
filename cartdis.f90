@@ -144,9 +144,27 @@
 !!                  vcritx = vcrit2
 !!                  vescx = vesc2
                   vrotx = vrot2
+               ENDIF
+
+!----          Fail explicitly instead of creating an infinite or zero
+!              smoothing length from an invalid wind-shell definition.
+               IF (nshellx <= 0) THEN
+                  IF (myrank.eq.0) WRITE(*,*) &
+                     'Invalid wind shell: nshell1(',ipt,')=',nshellx
+                  CALL quit
+               ENDIF
+               IF (rshellx <= rptmas(ipt)) THEN
+                  IF (myrank.eq.0) WRITE(*,*) &
+                     'Invalid wind shell: rshell=',rshellx, &
+                     ' must exceed stellar radius=',rptmas(ipt), &
+                     ' for star ',ipt
+                  CALL quit
+               ENDIF
+
+               IF (i > nptmass+np1) THEN
                   disfrac(i) = emdotratio &
-                               * REAL(nshell1(1))/REAL(nshell1(2))
-!!                  disfrac(i) = 1.0
+                               * REAL(nshell1(1))/REAL(nshellx)
+!!               disfrac(i) = 1.0
                ENDIF
 
 !----          Set the maximum theta if there is a disk, above which

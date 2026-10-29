@@ -7,10 +7,13 @@
       INTEGER, parameter :: DP = SELECTED_REAL_KIND(p=13,r=200)
       INTEGER, parameter :: I4B = selected_int_kind(r=9)
 
-      INTEGER(I4B), parameter :: idim=1200000,    &
-                            iptdim=2,       &
-                            iptneigh=200000, &
-                            nlmax = 50000
+      INTEGER(I4B), parameter :: idim=1200000, &
+                            iptdim=2,          &
+                            nlmax=50000
+
+!---- A point mass can overlap every gas particle, so its neighbour-list
+!     capacity must track the overall particle capacity.
+      INTEGER(I4B), parameter :: iptneigh=idim
 
       REAL(DP), parameter :: tiny=1.0E-18
 
