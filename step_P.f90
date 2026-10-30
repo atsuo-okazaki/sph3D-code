@@ -86,7 +86,11 @@
       REAL(DP), SAVE :: gravx1(idim), gravy1(idim)
       REAL(DP), SAVE :: gradpx1(idim), gradpy1(idim)
       REAL(DP), SAVE :: artvix1(idim), artviy1(idim)
-      REAL(DP), parameter :: small=1.0E-04, rhosmall=1.0E-05
+      REAL(DP), parameter :: small=1.0E-04
+!---- Limit the fractional change of the evolved thermal variable per step.
+!     The RK error estimate only measures changes in the derivative, so it
+!     does not protect against a large, nearly constant heating/cooling rate.
+      REAL(DP), parameter :: thermal_step_fraction=0.25_DP
       REAL(DP) :: dt, xlog2, f21, f22, deltat, dtfull, &
              dtf21, dtf22, xold, yold, zold, delvx, delvy, delvz, &
              vxstore, vystore, vzstore, pmasspt, &
@@ -96,8 +100,9 @@
              extraxv, extrayv, time, pmassi, r2, tolpart, errx, &
              erry, errz, errvx, errvy, errvz, erru, errh, errm, &
              errdivtol, rap, rmod1, divvi, aux1, aux2, aux3, denom, &
-             crstepi, rmodcr, force21, force22, force2, &
-             rmodcr2, rmod, stepi, factor, dytime, rx, ry, rz, &
+             crstepi, rmodcr, crstepu, rmodu, durate, &
+             force21, force22, force2, rmodcr2, rmod, stepi, factor, &
+             dytime, rx, ry, rz, &
              tcomp, r, vr, vth, vv, realtime, xp, yp, vxp, vyp, &
              anomtrue, rp, energyp, angmomp, &
              semiaxis, eccent, anomecc, anommean, hhigh, hlow, &
@@ -814,6 +819,7 @@
 !$OMP shared(dgrav,dphit,u,dumu,vx,vy,vz) &
 !$OMP shared(f1vx,f1vy,f1vz,f1u,f1h,f2vx,f2vy,f2vz,f2u,f2h) &
 !$OMP shared(tol,tolh,tolptm,dt,isteps,imaxstep,e1,divv,rho) &
+!$OMP shared(iener) &
 !$OMP shared(ifsvi,alphasph,betasph) &
 !$OMP shared(alpha,beta,vsound,xlog2,gravx,gravy,gravz,gradpx,gradpy) &
 !$OMP shared(gradpz,artvix,artviy,artviz,gravx1,gravy1,gradpx1) &
@@ -822,11 +828,11 @@
 !$OMP shared(h,x,y,z,poten,nneigh,iphase,isphcom) &
 !$OMP shared(pmass,ikilled,nactive,nkill,time) &
 !$OMP shared(anglostx,anglosty,anglostz,istminold,numneighadd) &
-!$OMP shared(rhomaxsync) &
 !$OMP private(i,j,tolpart) &
 !$OMP private(errx,erry,errz,errvx,errvy,errvz,erru,errh,errm) &
 !$OMP private(errdivtol,rap,rmod1,divvi,aux1,aux2,aux3,denom) &
-!$OMP private(crstepi,rmodcr,force21,force22,force2,rmodcr2,rmod) &
+!$OMP private(crstepi,rmodcr,crstepu,rmodu,durate) &
+!$OMP private(force21,force22,force2,rmodcr2,rmod) &
 !$OMP private(stepi,ibin,factor,istep2,irat,r2,pmassi) &
 !$OMP private(irktlnum) &
 !$OMP reduction(MAX:istepmax) &
@@ -1001,20 +1007,33 @@
             force2 = MAX(force21, force22)
             rmodcr2 = 0.3*SQRT(h(i)/SQRT(force2))
             rmodcr2 = rmodcr2/(dt*isteps(i)/imaxstep)
+
+!---- Limit both heating and cooling to a fixed fractional change in u.
+!     This is essential for low-density outflow particles, for which a large
+!     PdV or shock-heating term can otherwise cross u=0 or run away while the
+!     RK derivative-difference estimate remains small.
+            rmodu = HUGE(1.0_DP)
+            IF (iener.NE.0 .AND. u(i).GT.tiny) THEN
+               durate = MAX(ABS(f1u(i)),ABS(f2u(i)))
+               IF (durate.GT.tiny) THEN
+                  crstepu = thermal_step_fraction*u(i)/durate
+                  rmodu = crstepu/(dt*isteps(i)/imaxstep)
+               ENDIF
+            ENDIF
 !
 !--Decide which time step to take
 !
-            rmod = MIN(rmod1, rmodcr, rmodcr2)
+            rmod = MIN(rmod1, rmodcr, rmodcr2, rmodu)
          ELSE
             rmod = rmod1
          ENDIF
 !
 !--Reduce time step (no synchronization needed)
 !
-!-- Neglect the behavior of the particle if it is in
-!   a very low density region (26 Nov 2000).
-         IF ((rmod.LT.0.97) .AND. &
-             (rho(i).GT.rhomaxsync*rhosmall)) THEN
+!---- Low-density outflow particles still participate in hydrodynamic
+!     interactions.  They must therefore obey the same Courant, acceleration,
+!     and thermal limits as all other active gas particles.
+         IF (rmod.LT.0.97) THEN
             stepi = dt*isteps(i)/imaxstep*rmod
             ibin = INT(LOG10(dt/stepi)/xlog2) + 1
 
