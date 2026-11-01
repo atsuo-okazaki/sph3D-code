@@ -185,7 +185,6 @@
                IF (igrape.EQ.1) hmax(i) = h(i)
             ENDIF
 !
-            irktlnum = 0
          END DO
          jj = nlst
 !
@@ -810,6 +809,10 @@
       istepmax = 0
       iptnum = 0
       time = dt*itime/imaxstep + gt
+!---- Count temporary RK tolerance relaxations for this timestep only.
+!     The counter must be shared; a private uninitialized counter can stop
+!     an OpenMP run unpredictably.
+      irktlnum = 0
 !
 !--Keep velocities at half time step
 !
@@ -834,10 +837,9 @@
 !$OMP private(crstepi,rmodcr,crstepu,rmodu,durate) &
 !$OMP private(force21,force22,force2,rmodcr2,rmod) &
 !$OMP private(stepi,ibin,factor,istep2,irat,r2,pmassi) &
-!$OMP private(irktlnum) &
 !$OMP reduction(MAX:istepmax) &
 !$OMP reduction(MIN:istepmin) &
-!$OMP shared(myrank)
+!$OMP shared(myrank,irktlnum)
 
 !$OMP DO SCHEDULE(runtime)
 !POPTION INDEP
@@ -1079,6 +1081,13 @@
 !POPTION LOCK(rktotaln)
                irktlnum = irktlnum + 1
                IF (irktlnum.GT.10) THEN
+                  if(myrank.eq.0)then
+                     WRITE(iprint,*) &
+                        'STEP: too many temporary RK tolerance relaxations'
+                     WRITE(iprint,*) '  time, particle, count =', &
+                          time,i,irktlnum
+                     FLUSH(iprint)
+                  endif
                   CALL quit
                ENDIF
 !POPTION UNLOCK(rktotaln)

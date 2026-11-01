@@ -27,6 +27,7 @@
       use units 
       use logun 
       use part 
+      use dum
       use densi 
       use typef 
       use carac 
@@ -35,6 +36,12 @@
       use ener 
       use divve 
       use eosq 
+      use debugpt
+      use glrho
+      use artvb
+      use ian
+      use pres
+      use visc
       use bodys 
       use force, only: f1vx, f1vy, f1vz, f1u, f1h, &
                        f2vx, f2vy, f2vz, f2u, f2h
@@ -74,8 +81,8 @@
       INTEGER(I4B) :: iremove(idim) 
       INTEGER(I4B) :: nsplit, i, ii, iii, ip, j, &
                it0p, it1p, istepsp, iphasep, &
-               iantigrp, ibelongp
-      INTEGER(I4B) :: i1, nkillcur, iadd, nadd
+               iantigrp, ibelongp, iinp, iinoldp, iscurrentp
+      INTEGER(I4B) :: i1, nkillcur, iadd, nadd, nadd_required
       INTEGER(I4B), allocatable :: listkilled(:)
       REAL(DP), save :: xi, yi, zi, rx1, ry1, rz1, r2, &
                d12, q13, q23, roche, roche2, hroche2, cr13, &
@@ -202,6 +209,17 @@
             ENDIF 
          ENDDO 
       ENDDO 
+
+!---- Check capacity before child particles are written.  Reusable killed
+!     slots reduce the number of appended particles, while existing ghost
+!     particles must be shifted above the enlarged real-particle array.
+      nadd_required = MAX((nchild-1)*nsplit-nkillcur,0)
+      IF (npart+nadd_required+nghost > idim) THEN
+         if(myrank.eq.0) WRITE (iprint,*) &
+              'PSPLIT: particle capacity exceeded; required, idim =', &
+              npart+nadd_required+nghost, idim
+         CALL quit
+      ENDIF
                                                                         
       half = 0.5d0 
       third = 1.0d0/3.0d0 
@@ -247,6 +265,9 @@
          iphasep = iphase(ip) 
          iantigrp = iantigr(ip) 
          ibelongp = ibelong(ip) 
+         iinp = iin(ip)
+         iinoldp = iinold(ip)
+         iscurrentp = iscurrent(ip)
                                                                         
 !----    Each child's quantities                                             
          hc = hp*cr13 
@@ -260,6 +281,17 @@
 !        an inconsistent smoothing-length evolution.
          f1h(ip) = f1hp*cr13
          f2h(ip) = f2hp*cr13
+!----    psplit is called after the parent has reached the current time.
+!        Synchronize the RK base state with the central child's reduced h.
+         dumx(ip) = x(ip)
+         dumy(ip) = y(ip)
+         dumz(ip) = z(ip)
+         dumvx(ip) = vx(ip)
+         dumvy(ip) = vy(ip)
+         dumvz(ip) = vz(ip)
+         dumu(ip) = u(ip)
+         dumh(ip) = h(ip)
+         hasghost(ip) = 0
                                                                         
          DO i = 2, nchild
             iadd = iadd+1
@@ -346,12 +378,52 @@
             poten(j) = potenp
             pr(j) = prp
             divv(j) = divvp
+!----       Until a child reaches its first force evaluation it can already
+!           occur as a neighbour of another active particle.  Copy all
+!           neighbour-side hydrodynamic state from the parent; stale values
+!           in reused killed slots can otherwise create NaNs.
+            vsound(j) = vsound(ip)
+            curlv(j) = curlv(ip)
+            rho1(j) = rho1(ip)
+            rho2(j) = rho2(ip)
+            densgrad(j) = densgrad(ip)
+            prgradrho(j) = prgradrho(ip)
+            accgot1(j) = accgot1(ip)
+            tanviscfor1(j) = tanviscfor1(ip)
+            gradpx(j) = gradpx(ip)
+            gradpy(j) = gradpy(ip)
+            gradpz(j) = gradpz(ip)
+            artvix(j) = artvix(ip)
+            artviy(j) = artviy(ip)
+            artviz(j) = artviz(ip)
             it0(j) = it0p
             it1(j) = it1p
             isteps(j) = istepsp
             iphase(j) = iphasep
             iantigr(j) = iantigrp
             ibelong(j) = ibelongp
+!----       Killed slots can contain stale or NaN RK coordinates.  The tree
+!           is rebuilt immediately after injection, so every child must have
+!           a complete current-time base state before psplit returns.
+            dumx(j) = x(j)
+            dumy(j) = y(j)
+            dumz(j) = z(j)
+            dumvx(j) = vx(j)
+            dumvy(j) = vy(j)
+            dumvz(j) = vz(j)
+            dumu(j) = u(j)
+            dumh(j) = h(j)
+            iscurrent(j) = iscurrentp
+            iin(j) = iinp
+            iinold(j) = iinoldp
+            hasghost(j) = 0
+
+            IF (x(j).NE.x(j) .OR. y(j).NE.y(j) .OR. &
+                z(j).NE.z(j) .OR. h(j).NE.h(j)) THEN
+               if(myrank.eq.0) WRITE (iprint,*) &
+                    'PSPLIT: non-finite child state',ip,j,x(j),y(j),z(j),h(j)
+               CALL quit
+            ENDIF
          ENDDO 
       ENDDO
 
